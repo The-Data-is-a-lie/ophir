@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-02
+
+### Changed
+
+- Source ``torch`` from the PyTorch CUDA 12.8 (``cu128``) wheel index via a
+  ``[tool.uv.sources]`` / ``[[tool.uv.index]]`` entry, so GPU builds install
+  instead of the CPU-only wheels PyPI ships on Windows. ``uv.lock`` now pins
+  ``torch==2.11.0+cu128``.
+
+### Fixed
+
+- Fall back to eager ``flex_attention`` when Triton is unavailable (e.g. on
+  Windows) instead of ``torch.compile(flex_attention)``, which requires
+  Triton's GPU backend. Inference now runs on CUDA without Triton.
+
 ## [0.2.0] - 2026-06-01
 
 ### Added
@@ -149,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kwcantrell/ophir/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kwcantrell/ophir/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/kwcantrell/ophir/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/kwcantrell/ophir/compare/v0.1.5...v0.1.6

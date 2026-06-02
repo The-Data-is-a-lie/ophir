@@ -37,7 +37,14 @@ if TYPE_CHECKING:
         torch.Tensor,
     ]
 
-compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
+try:
+    import triton  # noqa: F401
+
+    compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
+except ModuleNotFoundError:
+    # Triton (and torch.compile's GPU backend) is unavailable -- common on
+    # Windows. Fall back to eager flex_attention, which still runs on CUDA.
+    compiled_flex_attention = flex_attention
 
 
 # --------------------------------------------------------------------------- #
