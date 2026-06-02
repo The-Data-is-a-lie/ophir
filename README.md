@@ -63,12 +63,19 @@ pip install .           # or: pip install -e .   (editable, for development)
 ```bash
 ophir serve [--port 7860] [--share/--no-share] [--debug/--no-debug]
 ophir register massive-key <KEY>
+ophir trade configure                       # save Alpaca paper credentials
+ophir trade rebalance [--top-k 10] [--refresh] [--dry-run/--execute]
 ```
 
 - `ophir serve` launches the Gradio UI (`ophir.ui.serve`). `--share` exposes a
   public link; `--debug` (default on) launches Gradio in debug mode.
 - `ophir register massive-key <KEY>` stores a [MASSIVE](https://pypi.org/project/massive/)
   API key (used for data fetching) under the package's `.ophir/` directory.
+- `ophir trade` is the Alpaca **paper**-trading command group (`configure`,
+  `account`, `buy`, `sell`, `orders`, `positions`).
+- `ophir trade rebalance` scores the S&P 500 with the trained model, ranks the
+  top-K names by predicted return, and places paper orders. It defaults to a
+  dry run; pass `--execute` to trade (requires a CUDA GPU and a checkpoint).
 
 ## Quickstart
 

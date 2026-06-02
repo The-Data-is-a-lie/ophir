@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-01
+
+### Added
+
+- Alpaca paper-trading command group ``ophir trade`` (:mod:`ophir.trading`):
+  ``configure``, ``account``, ``buy``, ``sell``, ``orders``, and ``positions``.
+  Credentials are stored as JSON under the package's
+  ``.ophir/alpaca_paper.json`` and all orders use the Alpaca paper endpoint.
+- ``ophir trade rebalance``: scores the S&P 500 with the trained base
+  checkpoint, ranks the top-K symbols by predicted near-term return, and
+  reconciles the paper account into them. Defaults to a dry run; ``--execute``
+  places orders. Options: ``--top-k``, ``--horizon``, ``--budget-frac``,
+  ``--min-score``, ``--refresh``.
+- New :mod:`ophir.strategy` module: MASSIVE-backed daily-bar refresh
+  (``refresh_universe``), forward-looking model inference
+  (``build_forecast_input`` / ``score_universe``), and the pure decision
+  helpers ``rank_top_k`` and ``compute_rebalance`` (unit-tested).
+
+### Changed
+
+- Add ``requests.*`` to the mypy ``ignore_missing_imports`` override (the
+  library ships no type stubs), keeping the new ``ophir.trading`` module
+  strict.
+
 ## [0.1.7] - 2026-05-20
 
 ### Fixed
@@ -125,7 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/kwcantrell/ophir/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/kwcantrell/ophir/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/kwcantrell/ophir/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/kwcantrell/ophir/compare/v0.1.4...v0.1.5

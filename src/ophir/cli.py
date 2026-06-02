@@ -7,10 +7,11 @@ sub-application under ``register`` and adds the top-level ``serve`` command.
 
 import typer
 
-from ophir import register
+from ophir import register, trading
 
 app = typer.Typer(help="Ophir CLI")
 app.add_typer(register.app, name="register")
+app.add_typer(trading.app, name="trade")
 
 
 @app.command()
