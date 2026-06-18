@@ -50,6 +50,7 @@ def test_signal_computes_metrics(monkeypatch):
     assert sig["n_days"] == 5
     assert sig["off_exchange_volume"] == 15000000
     assert sig["off_exchange_short_ratio"] == 0.4  # 6.0e6 / 1.5e7
+    assert sig["off_exchange_short_exempt_ratio"] == 0.008  # 1.2e5 / 1.5e7 (free-lunch field)
     assert sig["off_exchange_pct"] == 0.5  # 1.5e7 / 3.0e7
     assert sig["off_exchange_vol_zscore"] > 3  # the latest day is a clear anomaly
 

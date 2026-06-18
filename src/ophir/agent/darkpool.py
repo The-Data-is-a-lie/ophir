@@ -119,10 +119,22 @@ def _empty(symbol: str, as_of: Any, lookback: int, note: str) -> dict[str, Any]:
         "off_exchange_volume": None,
         "off_exchange_pct": None,
         "off_exchange_short_ratio": None,
+        "off_exchange_short_exempt_ratio": None,
+        "off_exchange_short_ratio_zscore": None,
         "off_exchange_vol_zscore": None,
         "source": _SOURCE,
         "note": note,
     }
+
+
+def _trailing_zscore(values: list[float]) -> float | None:
+    """Z-score of the latest value vs the trailing baseline (>=3 points), else ``None``."""
+    if len(values) < 3:
+        return None
+    baseline = values[:-1]
+    mean = statistics.fmean(baseline)
+    std = statistics.pstdev(baseline)
+    return (values[-1] - mean) / std if std > 0 else 0.0
 
 
 def dark_pool_signal(symbol: str, *, as_of: Any = None, lookback: int = 20) -> dict[str, Any]:
@@ -137,9 +149,11 @@ def dark_pool_signal(symbol: str, *, as_of: Any = None, lookback: int = 20) -> d
     dict
         ``off_exchange_volume`` (latest off-exchange shares), ``off_exchange_pct`` (that over
         the consolidated volume from the ingested OHLC, or ``None``), ``off_exchange_short_ratio``
-        (off-exchange short / total), ``off_exchange_vol_zscore`` (latest vs the trailing mean,
-        an anomaly flag), plus ``symbol`` / ``asof`` / ``lookback`` / ``n_days`` / ``source``.
-        Missing data yields a neutral dict, never an exception.
+        (off-exchange short / total), ``off_exchange_short_exempt_ratio`` (short-exempt / total),
+        ``off_exchange_short_ratio_zscore`` (the short ratio's latest-vs-baseline anomaly),
+        ``off_exchange_vol_zscore`` (latest vs the trailing mean, an anomaly flag), plus
+        ``symbol`` / ``asof`` / ``lookback`` / ``n_days`` / ``source``. Missing data yields a
+        neutral dict, never an exception.
     """
     from ophir.agent import market_calendar as cal
 
@@ -160,16 +174,20 @@ def dark_pool_signal(symbol: str, *, as_of: Any = None, lookback: int = 20) -> d
     totals = [row.total_volume for _, row in entries]
 
     short_ratio = latest.short_volume / latest.total_volume if latest.total_volume > 0 else None
+    short_exempt_ratio = (
+        latest.short_exempt_volume / latest.total_volume if latest.total_volume > 0 else None
+    )
 
     consolidated = _consolidated_volume(symbol, latest_session)
     off_pct = latest.total_volume / consolidated if consolidated else None
 
-    zscore: float | None = None
-    if len(totals) >= 3:
-        baseline = totals[:-1]
-        mean = statistics.fmean(baseline)
-        std = statistics.pstdev(baseline)
-        zscore = (totals[-1] - mean) / std if std > 0 else 0.0
+    zscore = _trailing_zscore(totals)
+    # Per-day off-exchange short ratio, then the latest vs its trailing baseline -- a
+    # short-pressure anomaly flag riding on the same already-parsed file (no extra I/O).
+    short_ratios = [
+        row.short_volume / row.total_volume for _, row in entries if row.total_volume > 0
+    ]
+    short_ratio_z = _trailing_zscore(short_ratios) if len(short_ratios) == len(entries) else None
 
     return {
         "symbol": symbol,
@@ -179,6 +197,12 @@ def dark_pool_signal(symbol: str, *, as_of: Any = None, lookback: int = 20) -> d
         "off_exchange_volume": round(latest.total_volume),
         "off_exchange_pct": round(off_pct, 4) if off_pct is not None else None,
         "off_exchange_short_ratio": round(short_ratio, 4) if short_ratio is not None else None,
+        "off_exchange_short_exempt_ratio": (
+            round(short_exempt_ratio, 4) if short_exempt_ratio is not None else None
+        ),
+        "off_exchange_short_ratio_zscore": (
+            round(short_ratio_z, 2) if short_ratio_z is not None else None
+        ),
         "off_exchange_vol_zscore": round(zscore, 2) if zscore is not None else None,
         "source": _SOURCE,
     }

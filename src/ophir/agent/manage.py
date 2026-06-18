@@ -119,6 +119,20 @@ def _dossier(candidate: Candidate) -> dict[str, Any]:
         "bull": f"{candidate.debate.bull.stance_strength:.0%}: {candidate.debate.bull.summary}",
         "bear": f"{candidate.debate.bear.stance_strength:.0%}: {candidate.debate.bear.summary}",
         "daily_vol_60d": candidate.brief.technicals.get("vol_60d"),
+        "mom_12_1": candidate.brief.technicals.get("mom_12_1"),
+        "rs_vs_spy_3m": candidate.brief.technicals.get("rs_vs_spy_3m"),
+        "flow_participation": candidate.brief.flow.get("off_exchange_pct"),
+        "flow_anomaly": candidate.brief.flow.get("off_exchange_vol_zscore"),
+        "days_to_cover": candidate.brief.short_interest.get("days_to_cover"),
+        "macro_regime": candidate.brief.macro.get("regime"),
+        "days_to_next_earnings": candidate.brief.events.get("days_to_next_earnings"),
+        "congress_net_bias": candidate.brief.congress.get("congress_net_bias"),
+        "insider_net_bias": candidate.brief.insider.get("insider_net_bias"),
+        "insider_cluster_buy": candidate.brief.insider.get("insider_cluster_flag"),
+        "put_call_oi": candidate.brief.options.get("put_call_ratio_oi"),
+        "iv_skew_25d": candidate.brief.options.get("iv_skew_25d"),
+        "news_sentiment": candidate.brief.sentiment.get("net_sentiment"),
+        "attention_zscore": candidate.brief.attention.get("wiki_pageviews_zscore"),
     }
 
 

@@ -126,12 +126,16 @@ def _build_messages(brief: ResearchBrief, side: Side) -> tuple[Any, Any]:
         "\n".join(f"  - {n['title']}" for n in brief.news if n.get("title"))
         or "  (no recent headlines)"
     )
+    signals = brief.advisory_signals()
+    signal_lines = json.dumps(signals, indent=2, default=str) if signals else "  (none available)"
     human = HumanMessage(
         content=(
             f"Ticker: {brief.symbol}\nAs-of date: {brief.asof}\n\n"
             f"FUNDAMENTALS:\n{json.dumps(brief.fundamentals, indent=2, default=str)}\n\n"
             f"NEWS HEADLINES:\n{news_lines}\n\n"
             f"TECHNICALS:\n{json.dumps(brief.technicals, indent=2, default=str)}\n\n"
+            "ADVISORY SIGNALS (flow / short interest / macro / events / congress -- "
+            f"low weight, never the sole basis):\n{signal_lines}\n\n"
             "NEUTRAL ANALYST NOTES:\n"
             f"  fundamentals: {brief.analysis.fundamentals_summary}\n"
             f"  news: {brief.analysis.news_summary}\n"

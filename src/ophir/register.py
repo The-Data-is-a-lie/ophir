@@ -455,3 +455,30 @@ def massive_key(
     """
     with open(os.path.join(OPHIR_DIR, ".massive_key"), "w") as f:
         f.write(f"{key}\n")
+
+
+@app.command()
+def fred_key(
+    key: Annotated[str, typer.Argument(help="FRED API key (free, no card)")],
+) -> None:
+    """Store a free FRED API key for the macro credit / conditions / curve series.
+
+    Backs the ``ophir register fred-key`` CLI command. The key is written to
+    ``.fred_key`` under :data:`OPHIR_DIR` and later read by :func:`get_fred_key`.
+
+    Parameters
+    ----------
+    key : str
+        The free FRED API key to persist (https://fredaccount.stlouisfed.org/apikeys).
+    """
+    with open(os.path.join(OPHIR_DIR, ".fred_key"), "w") as f:
+        f.write(f"{key}\n")
+
+
+def get_fred_key() -> str | None:
+    """Return the stored free FRED API key, or ``None`` if not registered."""
+    path = os.path.join(OPHIR_DIR, ".fred_key")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return f.read().strip() or None
