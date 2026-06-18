@@ -32,6 +32,7 @@ ingest **OHLC** → engineer the **13 features** → model **forecast** → **re
 | News headlines | Yahoo Finance — yfinance `.news` | `gather-news` |
 | Technicals (derived) | ingested OHLC + model forecast | `gather-technicals` |
 | Stock-split history | Yahoo Finance — yfinance `.splits` | `gather-splits` |
+| Dark-pool / off-exchange activity | FINRA daily short-sale file (free, no-auth) | `gather-dark-pool` |
 | S&P 500 constituents | Wikipedia — `pd.read_html` | `gather-sp500-universe` |
 | NYSE trading calendar | pandas-market-calendars (`NYSE`) | `gather-market-calendar` |
 | Alpaca paper account + positions | alpaca-py (paper, hardcoded) | `gather-account` |

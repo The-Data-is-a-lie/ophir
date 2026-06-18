@@ -92,3 +92,29 @@ def is_trading_day(day: Any = None) -> bool:
         ts = pd.Timestamp(day)
         target = (ts.tz_convert(_EASTERN) if ts.tzinfo is not None else ts).date()
     return bool(len(_nyse().valid_days(start_date=target, end_date=target)) > 0)
+
+
+def recent_sessions(end: Any = None, count: int = 20) -> list[pd.Timestamp]:
+    """Return the last ``count`` NYSE sessions on or before ``end`` (oldest first).
+
+    Parameters
+    ----------
+    end : date-like, optional
+        The last session to include. Defaults to :func:`last_closed_session`.
+    count : int, optional
+        How many trailing sessions to return. Defaults to ``20``.
+
+    Returns
+    -------
+    list of pandas.Timestamp
+        Up to ``count`` tz-naive midnight session dates, ascending.
+    """
+    if count <= 0:
+        return []
+    end_ts = last_closed_session() if end is None else pd.Timestamp(end).normalize()
+    start = (end_ts - pd.Timedelta(days=count * 2 + 12)).date()
+    idx = _nyse().valid_days(start_date=start, end_date=end_ts.date())
+    if idx.tz is not None:
+        idx = idx.tz_convert("UTC").tz_localize(None)
+    sessions = [pd.Timestamp(d).normalize() for d in idx]
+    return sessions[-count:]

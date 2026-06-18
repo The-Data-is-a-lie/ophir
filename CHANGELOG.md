@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-06-17
+
+### Added
+
+- Free dark-pool / off-exchange activity signal: `ophir.agent.darkpool.dark_pool_signal` reads
+  FINRA's free, no-auth daily short-sale-volume file (`cdn.finra.org/.../CNMSshvol{date}.txt`,
+  whose `TotalVolume` is off-exchange TRF/ADF/ORF volume) and returns a ticker's off-exchange
+  volume, dark participation % (vs consolidated volume), off-exchange short ratio, and an anomaly
+  z-score — a free approximation of Unusual Whales' dark-pool feed (daily aggregate, not
+  per-print). Files are cached per session under `<DATA_DIR>/finra/regsho/`; everything fails safe.
+- `market_calendar.recent_sessions(end, count)` — enumerate the last N closed NYSE sessions.
+- A `gather-dark-pool` skill plus catalog entries in `docs/data-inputs.md` and the `data-inputs`
+  index skill.
+
 ## [0.10.2] - 2026-06-17
 
 ### Added
@@ -382,7 +396,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/kwcantrell/ophir/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/kwcantrell/ophir/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kwcantrell/ophir/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kwcantrell/ophir/compare/v0.9.1...v0.10.0

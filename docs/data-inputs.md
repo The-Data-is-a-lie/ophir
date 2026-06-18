@@ -28,6 +28,14 @@ This catalogs every external and derived data input the ophir trading agent cons
   - Fail-safe: a failed ticker is printed and skipped. NOTE: largely dormant in the live path — OHLC is ingested with `auto_adjust=True`, so splits are only needed for raw/unadjusted price adjustment.
   - Skill: gather-splits
 
+- **Dark-pool / off-exchange activity (FINRA)**
+  - Provider: FINRA daily short-sale-volume file (free, **no auth**) — `https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt`; `TotalVolume` is the off-exchange (TRF/ADF/ORF-reported) volume — a free proxy for Unusual Whales' dark-pool feed.
+  - Fetch: [agent/darkpool.py:128](src/ophir/agent/darkpool.py:128) (`dark_pool_signal`); per-day download+parse [agent/darkpool.py:86](src/ophir/agent/darkpool.py:86) (`_fetch_daily`).
+  - Fields: `off_exchange_volume`, `off_exchange_pct` (vs consolidated yfinance volume), `off_exchange_short_ratio`, `off_exchange_vol_zscore` (anomaly z-score), plus `asof`/`n_days`.
+  - Persistence: each day's file cached under `<DATA_DIR>/finra/regsho/`; one download per session covers every ticker.
+  - Fail-safe: missing/late file, `403`, or unknown symbol → neutral dict, never raises. Daily **aggregate** off-exchange volume — not individual real-time prints (no free source has those).
+  - Skill: gather-dark-pool
+
 ## Research data
 
 - **Fundamentals (yfinance `.info`)**
@@ -138,6 +146,7 @@ This catalogs every external and derived data input the ophir trading agent cons
 
 - [gather-ohlc](../.claude/skills/gather-ohlc/SKILL.md) — daily OHLC bars (and the SPY benchmark) from yfinance.
 - [gather-splits](../.claude/skills/gather-splits/SKILL.md) — stock-split history from yfinance `.splits`.
+- [gather-dark-pool](../.claude/skills/gather-dark-pool/SKILL.md) — free dark-pool (off-exchange) activity from FINRA daily files.
 - [gather-fundamentals](../.claude/skills/gather-fundamentals/SKILL.md) — company fundamentals from yfinance `.info`.
 - [gather-news](../.claude/skills/gather-news/SKILL.md) — recent headlines from yfinance `.news`.
 - [gather-technicals](../.claude/skills/gather-technicals/SKILL.md) — derived indicators from OHLC + forecast.
