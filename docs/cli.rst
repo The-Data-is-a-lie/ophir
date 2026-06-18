@@ -223,7 +223,33 @@ Option         Default   Description
 The default is a **dry run** against an in-process simulator -- no orders are
 submitted. ``--broker alpaca`` targets a real Alpaca paper account (needs
 ``AGENT_ALPACA_KEY_ID`` / ``AGENT_ALPACA_SECRET_KEY``); ``--execute`` is required to
-actually place orders. Plans, fills, and the daily report are audit-logged.
+actually place orders. Plans, fills, and the daily report are audit-logged. When
+``--broker alpaca`` is used, the run also refreshes the trade tracker (below).
+
+``ophir report-trades``
+-----------------------
+
+Write a **trade tracker** from the live Alpaca paper account
+(``ophir.agent.trades.write_trade_tracker``): every filled trade with its date,
+and account gains/losses over **day / week / month / YTD / 1-year** windows
+(portfolio-level equity change -- realized + unrealized -- from Alpaca portfolio
+history). Requires ``AGENT_ALPACA_KEY_ID`` / ``AGENT_ALPACA_SECRET_KEY``.
+
+.. code-block:: bash
+
+   ophir report-trades [--out DIR] [--lookback-days INTEGER]
+
+==================== ========= ============================================
+Option               Default   Description
+==================== ========= ============================================
+``--out``            --        Output base dir (defaults to the reports dir).
+``--lookback-days``  ``370``   Trailing window for trades + equity history.
+==================== ========= ============================================
+
+Writes a regenerable ``trade-tracker/`` folder (``README.md`` + ``trades.csv``) under
+the reports dir and prints the windowed P&L. It fails safe: if there are no fills yet
+(e.g. the live run is gated) it still writes a tracker noting the empty state. The
+daily ``ophir trade --broker alpaca`` cycle refreshes it automatically.
 
 ``ophir backtest``
 ------------------
@@ -268,3 +294,24 @@ Argument       Description
 
 The stored key is later read by :func:`ophir.register.get_massive_client` to
 construct an authenticated ``massive.RESTClient``.
+
+``ophir register fred-key``
+---------------------------
+
+Store a free `FRED <https://fredaccount.stlouisfed.org/apikeys>`_ API key for the
+macro credit / financial-conditions / yield-curve series. The key is written to
+``.fred_key`` inside the package's ``.ophir/`` directory.
+
+.. code-block:: bash
+
+   ophir register fred-key <KEY>
+
+============== ============================================
+Argument       Description
+============== ============================================
+``KEY``        The free FRED API key to store.
+============== ============================================
+
+The stored key is later read by :func:`ophir.register.get_fred_key` and used by the
+macro signal (``ophir.agent.macro.macro_signal``) for the HY credit spread, NFCI, and
+2s10s series; without it those fields are ``None`` (the VIX regime and OPEX gate still work).

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-18
+
+### Added
+
+- Free alternative-data input signals, each a fail-safe, point-in-time (`as_of`-gated)
+  `*_signal()` module surfaced as a low-weight advisory dimension on `ResearchBrief`
+  (`advisory_signals()`, fed to the debate + manager prompts):
+  - `agent.short_interest` — FINRA biweekly consolidated short interest (days-to-cover, change).
+  - `agent.edgar` — SEC EDGAR Form 4 corporate-insider trades + 8-K / 13D-G events (`filingDate`-gated).
+  - `agent.congress` — US House PTR disclosures: cluster buys + signed dollar flow (disclosure-gated).
+  - `agent.options_flow` — CBOE per-name put/call ratio, 25-delta IV skew, `iv30` (live-only snapshot).
+  - `agent.macro` — VIX term-structure regime, plus FRED HY credit spread / NFCI / 2s10s and a
+    deterministic days-to-OPEX gate (`ophir register fred-key`).
+  - `agent.events` — Yahoo earnings-calendar event gate (days to next earnings).
+  - `agent.sentiment` — FinBERT-scored sentiment over the brief's existing headlines (no new fetch).
+  - `agent.attention` — Wikipedia pageviews + ApeWisdom Reddit mentions.
+- Derived technicals with no new fetch: 12-1 momentum, relative strength vs SPY, ATR%, and Amihud
+  illiquidity / dollar volume; plus a FINRA short-exempt ratio from the already-parsed Reg SHO file.
+- The existing `dark_pool_signal` is now wired into `ResearchBrief` (`flow` dimension).
+- Trade tracker: `ophir report-trades` writes a `trade-tracker/` folder (`README.md` + `trades.csv`)
+  from the live Alpaca paper account — every filled trade with its date, and day / week / month /
+  YTD / 1-year account P&L from portfolio history. It auto-refreshes after each
+  `ophir trade --broker alpaca` run and mirrors a copy into the project root.
+- `AlpacaPaperBroker.filled_orders` / `equity_series`; the `ophir register fred-key` command.
+- Per-source `gather-*` skills (insider, options, sentiment, attention, congress, short-interest,
+  macro, events), `docs/data-inputs.md` catalog rows, and `report-trades` / `register fred-key` CLI docs.
+
+### Changed
+
+- New input modules add a `pypdf` dependency (House PTR PDF parsing); the FinBERT sentiment signal
+  uses `transformers` (already present).
+
 ## [0.10.3] - 2026-06-17
 
 ### Added

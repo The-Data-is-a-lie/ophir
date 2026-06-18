@@ -12,6 +12,7 @@ band to cut churn, and reconciling against broker truth. Everything is audit-log
 
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 import json
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 OrderSide = Literal["buy", "sell"]
 _CENTS = Decimal("0.01")
+# `datetime.UTC` (py3.11) would trip mypy's py3.10 target; `timezone.utc` works on both.
+_UTC = dt.timezone.utc  # noqa: UP017
 
 
 def _money(amount: Decimal) -> Decimal:
@@ -181,6 +184,75 @@ class AlpacaPaperBroker:
         audit.log_event(
             "order_submitted", symbol=order.symbol, side=order.side, notional=float(order.notional)
         )
+
+    def filled_orders(self, *, lookback_days: int = 370) -> list[dict[str, Any]]:
+        """Filled orders over the trailing window as plain dicts; ``[]`` on any error.
+
+        Each: ``symbol`` / ``side`` / ``qty`` / ``fill_price`` / ``notional`` /
+        ``filled_at`` (ISO date) / ``status``. The Alpaca account is the source of
+        truth -- this never raises, so a missing key or API hiccup just yields ``[]``.
+        """
+        try:
+            requests_mod = importlib.import_module("alpaca.trading.requests")
+            enums_mod = importlib.import_module("alpaca.trading.enums")
+            after = dt.datetime.now(_UTC) - dt.timedelta(days=lookback_days)
+            request = requests_mod.GetOrdersRequest(
+                status=enums_mod.QueryOrderStatus.CLOSED, after=after, limit=500
+            )
+            orders = self._client.get_orders(filter=request)
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for order in orders or []:
+            filled_at = getattr(order, "filled_at", None)
+            if _enum_str(getattr(order, "status", "")) != "filled" or filled_at is None:
+                continue
+            out.append(
+                {
+                    "symbol": getattr(order, "symbol", ""),
+                    "side": _enum_str(getattr(order, "side", "")),
+                    "qty": _opt_float(getattr(order, "filled_qty", None)),
+                    "fill_price": _opt_float(getattr(order, "filled_avg_price", None)),
+                    "notional": _opt_float(getattr(order, "notional", None)),
+                    "filled_at": filled_at.date().isoformat(),
+                    "status": "filled",
+                }
+            )
+        out.sort(key=lambda row: row["filled_at"])
+        return out
+
+    def equity_series(self, *, lookback_days: int = 370) -> list[tuple[dt.date, float]]:
+        """Daily ``(date, equity)`` account history, ascending; ``[]`` on any error."""
+        try:
+            requests_mod = importlib.import_module("alpaca.trading.requests")
+            period = "1A" if lookback_days >= 360 else f"{max(1, lookback_days)}D"
+            request = requests_mod.GetPortfolioHistoryRequest(period=period, timeframe="1D")
+            hist = self._client.get_portfolio_history(history_filter=request)
+            stamps = list(getattr(hist, "timestamp", []) or [])
+            equities = list(getattr(hist, "equity", []) or [])
+        except Exception:
+            return []
+        series: list[tuple[dt.date, float]] = []
+        for stamp, equity in zip(stamps, equities, strict=False):
+            value = _opt_float(equity)
+            if value is None or value <= 0:  # drop Alpaca's pre-funding zero padding
+                continue
+            series.append((dt.datetime.fromtimestamp(int(stamp), _UTC).date(), value))
+        return series
+
+
+def _enum_str(value: Any) -> str:
+    """Lower-cased string for an alpaca enum or plain value (``OrderSide.BUY`` -> ``buy``)."""
+    return str(getattr(value, "value", value)).split(".")[-1].lower()
+
+
+def _opt_float(value: Any) -> float | None:
+    """Coerce to a finite float, or ``None``."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out and out not in (float("inf"), float("-inf")) else None
 
 
 def _client_order_id(asof: str, symbol: str, side: str) -> str:

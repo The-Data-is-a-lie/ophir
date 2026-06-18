@@ -448,6 +448,61 @@ def trade(
     typer.echo(f"  {daily_report(portfolio, orders)}")
     typer.echo(f"  --- per-stock dossiers written to {report_path} ---")
 
+    if broker == "alpaca":  # refresh the live trade tracker; never break the cycle
+        from ophir.agent.trades import write_trade_tracker
+
+        try:
+            tracker_path = write_trade_tracker(account_broker)
+            typer.echo(f"  --- trade tracker refreshed at {tracker_path} ---")
+        except Exception as exc:  # advisory only -- must never abort the trade cycle
+            typer.echo(f"  [warning] trade tracker skipped ({type(exc).__name__})")
+
+
+@app.command()
+def report_trades(
+    out: str | None = typer.Option(None, help="Output base dir (defaults to the reports dir)."),
+    lookback_days: int = typer.Option(
+        370, help="Trailing window (days) for trades + equity history."
+    ),
+) -> None:
+    """Write a trade tracker: every trade + date and day/week/month/YTD/1-year P&L.
+
+    Pulls the live Alpaca **paper** account's filled orders and equity history and
+    writes a regenerable ``trade-tracker/`` folder (``README.md`` + ``trades.csv``)
+    under the reports dir. Requires ``AGENT_ALPACA_KEY_ID`` / ``AGENT_ALPACA_SECRET_KEY``.
+
+    Parameters
+    ----------
+    out : str, optional
+        Output base directory; defaults to the configured reports dir.
+    lookback_days : int, optional
+        Trailing window for the trade list + equity history. Defaults to ``370``.
+    """
+    from pathlib import Path
+
+    from ophir.agent.execute import AlpacaPaperBroker
+    from ophir.agent.trades import window_pnl, write_trade_tracker
+
+    try:
+        broker = AlpacaPaperBroker()
+    except Exception as exc:  # missing/invalid creds, etc. -- exit cleanly with a hint
+        typer.echo(f"[error] could not open the Alpaca paper account: {exc}")
+        typer.echo("Set AGENT_ALPACA_KEY_ID and AGENT_ALPACA_SECRET_KEY, then retry.")
+        return
+
+    path = write_trade_tracker(
+        broker, out_dir=Path(out) if out else None, lookback_days=lookback_days
+    )
+    typer.echo(f"Trade tracker written to {path}")
+    windows = window_pnl(broker.equity_series(lookback_days=lookback_days))
+    for label in ("Day", "Week", "Month", "YTD", "1 Year"):
+        w = windows.get(label)
+        if not w:
+            typer.echo(f"  {label:<7} n/a")
+            continue
+        pct = f" ({w['pnl_pct']:+.2%})" if w["pnl_pct"] is not None else ""
+        typer.echo(f"  {label:<7} {w['pnl']:+,.2f}{pct}")
+
 
 @app.command()
 def backtest(
