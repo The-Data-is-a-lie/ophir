@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-06-22
+
+### Fixed
+
+- Trade tracker no longer looks frozen on a mid-session refresh. When the live Alpaca
+  account equity is ahead of the settled daily portfolio-history series (which only
+  posts an end-of-day point after the close), the live mark is now spliced onto the
+  series so the *As of* date and every window's End equity track real time — flagged
+  as a live intraday mark so it is not mistaken for a settled close. The
+  `ophir report-trades` terminal summary uses the same spliced series, so it agrees
+  with the written report.
+
 ## [0.11.0] - 2026-06-18
 
 ### Added
@@ -428,7 +440,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/kwcantrell/ophir/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/kwcantrell/ophir/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/kwcantrell/ophir/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/kwcantrell/ophir/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kwcantrell/ophir/compare/v0.10.0...v0.10.1

@@ -1,6 +1,7 @@
 """Offline tests for the trade-tracker (stub broker; no network)."""
 
 import datetime as dt
+from types import SimpleNamespace
 
 from ophir.agent import trades
 from ophir.agent.execute import _enum_str, _opt_float
@@ -48,9 +49,12 @@ def test_window_pnl_ignores_prefunding_zero_padding():
 
 
 class _StubBroker:
-    def __init__(self, trades_, series):
+    def __init__(self, trades_, series, *, equity=119_950.0, cash=5_000.0, has_account=True):
         self._trades = trades_
         self._series = series
+        self._equity = equity
+        self._cash = cash
+        self._has_account = has_account
 
     def filled_orders(self, *, lookback_days=370):
         return self._trades
@@ -59,11 +63,9 @@ class _StubBroker:
         return self._series
 
     def get_account(self):
-        class _Acct:
-            equity = 119_950.0
-            cash = 5_000.0
-
-        return _Acct()
+        if not self._has_account:
+            return None
+        return SimpleNamespace(equity=self._equity, cash=self._cash)
 
 
 def test_write_trade_tracker_writes_folder(tmp_path):
@@ -97,7 +99,8 @@ def test_write_trade_tracker_writes_folder(tmp_path):
     # P&L table + both trades present; newest-first in the markdown
     assert "## Gains / losses" in readme and "| Day |" in readme and "| 1 Year |" in readme
     assert "AAPL" in readme and "NVDA" in readme
-    assert readme.index("2026-06-17") < readme.index("2026-06-15")  # newest first
+    trades_md = readme.split("## Trades")[1]  # scope to the trades table (gains table reuses dates)
+    assert trades_md.index("2026-06-17") < trades_md.index("2026-06-15")  # newest first
     assert "Trades (2)" in readme
     assert csv.splitlines()[0] == "filled_at,symbol,side,qty,fill_price,notional,status"
     assert len(csv.strip().splitlines()) == 3  # header + 2 fills
@@ -126,6 +129,65 @@ def test_write_trade_tracker_mirrors_into_repo(monkeypatch, tmp_path):
     assert primary == primary_base / "trade-tracker"
     assert (primary_base / "trade-tracker" / "README.md").exists()
     assert (repo_base / "trade-tracker" / "README.md").exists()  # in-repo copy too
+
+
+def test_write_trade_tracker_splices_live_equity_midsession(tmp_path):
+    # Mid-session: Alpaca's daily series lags (tail dated before today) but the live
+    # account equity is current -> splice it so the As-of date, every window's End
+    # equity, and the header all reflect the live mark, flagged as intraday.
+    today = dt.date.today()
+    series = [(today - dt.timedelta(days=4), 99_680.82)]
+    broker = _StubBroker([], series, equity=99_806.03, cash=84_757.58)
+
+    path = trades.write_trade_tracker(broker, out_dir=tmp_path)
+    readme = (path / "README.md").read_text(encoding="utf-8")
+
+    assert f"- **As of:** {today.isoformat()}" in readme
+    assert "(live intraday mark" in readme
+    assert "not a settled end-of-day snapshot" in readme
+    assert "$99,806.03" in readme  # live header equity
+    for label in ("Day", "Week", "Month", "YTD", "1 Year"):
+        row = next(ln for ln in readme.splitlines() if ln.startswith(f"| {label} |"))
+        assert "$99,806.03" in row  # End equity == live mark
+        assert "$99,680.82" in row  # Start equity == settled base
+
+
+def test_write_trade_tracker_no_live_equity_keeps_settled(tmp_path):
+    # No live equity (broker account unavailable): no splice, no live label, and the
+    # As-of stays the settled series tail -- identical to the pre-splice behavior.
+    today = dt.date.today()
+    tail = today - dt.timedelta(days=3)
+    series = [(today - dt.timedelta(days=10), 100_000.0), (tail, 99_900.0)]
+    broker = _StubBroker([], series, has_account=False)
+
+    path = trades.write_trade_tracker(broker, out_dir=tmp_path)
+    readme = (path / "README.md").read_text(encoding="utf-8")
+
+    assert f"- **As of:** {tail.isoformat()}" in readme
+    assert "live intraday mark" not in readme
+    assert "not a settled end-of-day snapshot" not in readme
+
+
+def test_splice_live_equity_replaces_same_day_tail():
+    # Alpaca already posted today's point: the live mark replaces it in place
+    # (no duplicate row, series length unchanged), keeping the tail's date.
+    today = dt.date.today()
+    series = [(today - dt.timedelta(days=1), 99_500.0), (today, 99_700.0)]
+    spliced, live = trades._splice_live_equity(series, SimpleNamespace(equity=99_806.03))
+    assert live is True
+    assert len(spliced) == len(series)
+    assert spliced[-1] == (today, 99_806.03)
+    assert spliced[-2] == series[-2]
+
+
+def test_splice_live_equity_noops_without_live_equity():
+    today = dt.date.today()
+    series = [(today - dt.timedelta(days=2), 100_000.0)]
+    splice = trades._splice_live_equity
+    assert splice(series, None) == (series, False)  # no account
+    assert splice([], SimpleNamespace(equity=120_000.0)) == ([], False)  # empty series
+    assert splice(series, SimpleNamespace(equity=0.0))[1] is False  # non-positive
+    assert splice(series, SimpleNamespace(equity=float("nan")))[1] is False  # NaN
 
 
 def test_broker_enum_and_float_helpers():

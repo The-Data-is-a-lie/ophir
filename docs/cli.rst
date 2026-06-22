@@ -247,7 +247,10 @@ Option               Default   Description
 ==================== ========= ============================================
 
 Writes a regenerable ``trade-tracker/`` folder (``README.md`` + ``trades.csv``) under
-the reports dir and prints the windowed P&L. It fails safe: if there are no fills yet
+the reports dir and prints the windowed P&L. On a mid-session refresh -- before Alpaca
+posts the day's settled close -- the latest equity point is the live account mark, so
+the *As of* date and window End equity track real time, flagged as a live intraday
+mark. It fails safe: if there are no fills yet
 (e.g. the live run is gated) it still writes a tracker noting the empty state. The
 daily ``ophir trade --broker alpaca`` cycle refreshes it automatically.
 

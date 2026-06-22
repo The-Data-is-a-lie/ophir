@@ -481,7 +481,12 @@ def report_trades(
     from pathlib import Path
 
     from ophir.agent.execute import AlpacaPaperBroker
-    from ophir.agent.trades import window_pnl, write_trade_tracker
+    from ophir.agent.trades import (
+        _safe_call,
+        _splice_live_equity,
+        window_pnl,
+        write_trade_tracker,
+    )
 
     try:
         broker = AlpacaPaperBroker()
@@ -494,7 +499,10 @@ def report_trades(
         broker, out_dir=Path(out) if out else None, lookback_days=lookback_days
     )
     typer.echo(f"Trade tracker written to {path}")
-    windows = window_pnl(broker.equity_series(lookback_days=lookback_days))
+    series, _ = _splice_live_equity(
+        broker.equity_series(lookback_days=lookback_days), _safe_call(broker.get_account)
+    )
+    windows = window_pnl(series)
     for label in ("Day", "Week", "Month", "YTD", "1 Year"):
         w = windows.get(label)
         if not w:

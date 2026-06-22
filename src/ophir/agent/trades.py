@@ -10,9 +10,12 @@ regenerable ``trade-tracker/`` folder under the reports dir:
 * ``trades.csv`` -- the raw filled-trade rows for spreadsheets.
 
 P&L is the account *equity* change over each window (from portfolio history), so it
-reflects the true paper-account return. Everything fails safe: a missing broker
-method, an API hiccup, or **no fills yet** (the live run may be gated) still writes a
-tracker that says so, never raising.
+reflects the true paper-account return. When the live account equity is ahead of the
+settled daily history (a mid-session run, before Alpaca posts today's end-of-day
+point), the live mark is spliced onto the series so the *As of* date and every
+window's End equity track real time, flagged as a live intraday mark. Everything
+fails safe: a missing broker method, an API hiccup, or **no fills yet** (the live
+run may be gated) still writes a tracker that says so, never raising.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ophir.agent import audit
+from ophir.agent.execute import _opt_float
 
 if TYPE_CHECKING:
     from ophir.agent.config import AgentSettings
@@ -118,14 +122,22 @@ def _render_markdown(
     account: Any,
     windows: dict[str, dict[str, Any]],
     trades: list[dict[str, Any]],
+    *,
+    live: bool = False,
 ) -> str:
-    """Render the trade-tracker markdown (header + P&L table + trades table)."""
+    """Render the trade-tracker markdown (header + P&L table + trades table).
+
+    ``live`` flags that the latest equity point is the live account mark spliced onto
+    the settled daily history (a mid-session run), so the *As of* line and a footnote
+    note it is not yet a settled end-of-day close.
+    """
     equity = _money(getattr(account, "equity", None)) if account is not None else "n/a"
     cash = _money(getattr(account, "cash", None)) if account is not None else "n/a"
+    asof_note = "  *(live intraday mark — not a settled EOD close)*" if live else ""
     lines = [
         "# Ophir paper-trading tracker",
         "",
-        f"- **As of:** {asof}",
+        f"- **As of:** {asof}{asof_note}",
         f"- **Account equity:** {equity}  |  **Cash:** {cash}",
         f"- **Source:** {_SOURCE}",
         "- Paper trading only. P&L is account equity change over each window "
@@ -145,6 +157,12 @@ def _render_markdown(
             f"| {label} | {w['start_date']} | {_money(w['start_equity'])} | "
             f"{_money(w['end_equity'])} | {_signed(w['pnl'])} | {_pct(w['pnl_pct'])} |"
         )
+    if live:
+        lines += [
+            "",
+            "_End equity is the live account mark as of the As-of time, not a settled "
+            "end-of-day snapshot._",
+        ]
 
     lines += ["", f"## Trades ({len(trades)})", ""]
     if not trades:
@@ -186,6 +204,32 @@ def _render_csv(trades: list[dict[str, Any]]) -> str:
     return "\n".join(rows) + "\n"
 
 
+def _splice_live_equity(
+    series: list[tuple[dt.date, float]], account: Any
+) -> tuple[list[tuple[dt.date, float]], bool]:
+    """Splice the live account equity onto the tail of the settled equity series.
+
+    Alpaca's daily portfolio history only carries *settled* end-of-day points, so a
+    mid-session run leaves the series tail a day or more behind the live account
+    mark. Appending the live equity (or, for a tail already dated today/later,
+    replacing that tail's value) makes the *As of* date and every window's End equity
+    agree with the live header. Returns ``(series, live)``; ``live`` is True when a
+    live point was spliced in. A no-op (``live=False``) when there is no positive
+    live equity or no settled series to extend -- both preserve the fail-safe
+    rendering (an empty history still shows ``n/a`` windows, never a fabricated point).
+    """
+    if not series:
+        return series, False
+    equity = _opt_float(getattr(account, "equity", None)) if account is not None else None
+    if equity is None or equity <= 0:  # _opt_float already rejected inf / NaN
+        return series, False
+    today = dt.date.today()
+    tail_date = series[-1][0]
+    if tail_date >= today:  # Alpaca already posted today's (or a later) point
+        return [*series[:-1], (tail_date, equity)], True
+    return [*series, (today, equity)], True
+
+
 def write_trade_tracker(
     broker: Any,
     *,
@@ -197,7 +241,9 @@ def write_trade_tracker(
 
     ``broker`` must expose ``filled_orders(lookback_days=...)`` and
     ``equity_series(lookback_days=...)`` (the :class:`~ophir.agent.execute.AlpacaPaperBroker`
-    does); ``get_account`` is used for the header if present. Never raises -- on any
+    does); ``get_account`` is used for the header and, when its live equity is ahead
+    of the settled daily history, to splice a live intraday point onto the series so
+    the *As of* date and window End equity track real time. Never raises -- on any
     failure it writes a tracker noting the empty state.
 
     Writes to ``<out_dir or report_dir>/trade-tracker``. When ``out_dir`` is not given
@@ -214,9 +260,10 @@ def write_trade_tracker(
     series = _safe_call(lambda: broker.equity_series(lookback_days=lookback_days)) or []
     account = _safe_call(broker.get_account) if hasattr(broker, "get_account") else None
 
+    series, live = _splice_live_equity(series, account)
     windows = window_pnl(series)
     asof = series[-1][0].isoformat() if series else _today()
-    readme = _render_markdown(asof, account, windows, trades)
+    readme = _render_markdown(asof, account, windows, trades, live=live)
     csv = _render_csv(trades)
 
     bases = [out_dir if out_dir is not None else _base_report_dir(settings)]
