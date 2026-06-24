@@ -21,6 +21,12 @@ def _yahoo_frame(make_ohlcv, n_days=500):
     return df
 
 
+def _yahoo_download_frame(make_ohlcv, symbols, n_days=120):
+    """A ``yf.download(group_by="ticker")``-style MultiIndex (ticker, field) frame."""
+    per = {sym: _yahoo_frame(make_ohlcv, n_days=n_days) for sym in symbols}
+    return pd.concat(per, axis=1)
+
+
 @pytest.fixture
 def fake_yahoo(monkeypatch, make_ohlcv):
     """Patch ``yfinance.Ticker`` to return a deterministic 500-day frame."""
@@ -67,22 +73,75 @@ def test_latest_window_tensors_shapes(fake_yahoo, tmp_path):
 
 
 def test_ingest_many_skips_failures(monkeypatch, make_ohlcv, tmp_path):
-    good = _yahoo_frame(make_ohlcv, n_days=120)
+    # A delisted/invalid ticker is simply absent from the batch download -> skipped.
+    def _fake_download(tickers, **kwargs):
+        present = [t for t in tickers if t != "BAD"]
+        return _yahoo_download_frame(make_ohlcv, present, n_days=120)
 
-    class _MixedTicker:
-        def __init__(self, symbol):
-            self.symbol = symbol
-
-        def history(self, **kwargs):
-            if self.symbol == "BAD":
-                return pd.DataFrame()
-            return good.copy()
-
-    monkeypatch.setattr("yfinance.Ticker", _MixedTicker)
+    monkeypatch.setattr("yfinance.download", _fake_download)
 
     paths = ingest_many(["good", "BAD"], days=200, stocks_dir=str(tmp_path))
     assert set(paths) == {"GOOD"}
     assert paths["GOOD"].exists()
+
+
+def test_ingest_many_batches_and_dedupes(monkeypatch, make_ohlcv, tmp_path):
+    chunks = []
+
+    def _fake_download(tickers, **kwargs):
+        chunks.append(list(tickers))
+        return _yahoo_download_frame(make_ohlcv, list(tickers), n_days=120)
+
+    monkeypatch.setattr("yfinance.download", _fake_download)
+
+    paths = ingest_many(
+        ["AAA", "BBB", "CCC", "aaa"], days=200, stocks_dir=str(tmp_path), chunk_size=2
+    )
+    assert set(paths) == {"AAA", "BBB", "CCC"}  # duplicate "aaa" collapsed
+    assert chunks == [["AAA", "BBB"], ["CCC"]]  # deduped, then chunked by 2
+
+
+def test_ingest_many_normalizes_dotted_symbols(monkeypatch, make_ohlcv, tmp_path):
+    seen = {}
+
+    def _fake_download(tickers, **kwargs):
+        seen["tickers"] = list(tickers)
+        return _yahoo_download_frame(make_ohlcv, list(tickers), n_days=120)
+
+    monkeypatch.setattr("yfinance.download", _fake_download)
+
+    paths = ingest_many(["brk.b"], days=200, stocks_dir=str(tmp_path))
+    assert seen["tickers"] == ["BRK-B"]  # dot -> dash, upper-cased before fetch
+    assert set(paths) == {"BRK-B"}
+    assert paths["BRK-B"] == tmp_path / "symbol=BRK-B" / "data.parquet"
+
+
+def test_ingest_many_retries_then_succeeds(monkeypatch, make_ohlcv, tmp_path):
+    calls = {"n": 0}
+
+    def _flaky_download(tickers, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("rate limited")
+        return _yahoo_download_frame(make_ohlcv, list(tickers), n_days=120)
+
+    monkeypatch.setattr("yfinance.download", _flaky_download)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+
+    paths = ingest_many(["AAA"], days=200, stocks_dir=str(tmp_path))
+    assert set(paths) == {"AAA"}
+    assert calls["n"] == 2  # failed once, backed off, retried, succeeded
+
+
+def test_ingest_many_all_fail_is_safe(monkeypatch, tmp_path):
+    def _always_fail(tickers, **kwargs):
+        raise RuntimeError("yahoo down")
+
+    monkeypatch.setattr("yfinance.download", _always_fail)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+
+    paths = ingest_many(["AAA", "BBB"], days=200, stocks_dir=str(tmp_path), max_retries=2)
+    assert paths == {}  # never raises; just an empty result
 
 
 def test_ingest_unknown_symbol_raises(monkeypatch, tmp_path):

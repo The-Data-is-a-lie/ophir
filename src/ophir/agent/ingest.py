@@ -27,6 +27,11 @@ _MIN_MODEL_DAYS = 455  # 365-day window + ~90 calendar days of rolling-feature w
 _STALE_DAYS = 5
 
 
+def _norm_symbol(symbol: str) -> str:
+    """Normalize a ticker to Yahoo form: upper/stripped, '.' -> '-' (BRK.B -> BRK-B)."""
+    return symbol.strip().upper().replace(".", "-")
+
+
 def _fetch_yahoo(symbol: str, days: int) -> pd.DataFrame:
     """Fetch ``days`` of split/dividend-adjusted daily bars from Yahoo Finance."""
     import yfinance as yf
@@ -101,7 +106,7 @@ def ingest(symbol: str, days: int = 730, *, stocks_dir: str | None = None) -> Pa
     pathlib.Path
         The written parquet path.
     """
-    symbol = symbol.upper().strip()
+    symbol = _norm_symbol(symbol)
     df = _normalize(_fetch_yahoo(symbol, days))
     if df.empty:
         raise ValueError(f"No usable rows for {symbol!r} after normalization.")
@@ -116,18 +121,104 @@ def ingest(symbol: str, days: int = 730, *, stocks_dir: str | None = None) -> Pa
     return dest
 
 
-def ingest_many(
-    symbols: list[str], days: int = 730, *, stocks_dir: str | None = None
-) -> dict[str, Path]:
-    """Ingest several tickers; returns ``{symbol: parquet_path}``.
+def _split_chunk(raw: pd.DataFrame, symbols: list[str]) -> dict[str, pd.DataFrame]:
+    """Split a multi-ticker ``yf.download(group_by="ticker")`` frame into per-symbol frames.
 
-    A failed symbol is reported and skipped so one bad ticker does not abort the
-    whole batch.
+    Tickers absent from the download (delisted/invalid) are omitted. A single-ticker
+    download returns a flat (non-MultiIndex) frame, handled as the lone symbol.
     """
-    paths: dict[str, Path] = {}
-    for symbol in symbols:
+    out: dict[str, pd.DataFrame] = {}
+    columns = raw.columns
+    if getattr(columns, "nlevels", 1) > 1:  # MultiIndex (ticker, field)
+        present = set(columns.get_level_values(0))
+        for symbol in symbols:
+            if symbol in present:
+                out[symbol] = raw[symbol]
+    elif len(symbols) == 1:
+        out[symbols[0]] = raw
+    return out
+
+
+def _download_chunk(symbols: list[str], days: int, max_retries: int) -> dict[str, pd.DataFrame]:
+    """Batch-download a chunk of tickers from Yahoo with retry/backoff; ``{}`` if all fail."""
+    import time
+
+    import yfinance as yf
+
+    end = dt.date.today()
+    start = end - dt.timedelta(days=days)
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
         try:
-            paths[symbol.upper().strip()] = ingest(symbol, days, stocks_dir=stocks_dir)
-        except (ValueError, OSError) as exc:
-            print(f"[ingest] {symbol}: FAILED -- {exc}")
+            raw = yf.download(
+                symbols,
+                start=start.isoformat(),
+                end=end.isoformat(),
+                interval="1d",
+                auto_adjust=True,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+            )
+        except Exception as exc:  # network / rate-limit / parse error -- retry
+            last_error, raw = exc, None
+        if raw is not None and not raw.empty:
+            return _split_chunk(raw, symbols)
+        if attempt < max_retries - 1:
+            time.sleep(2.0**attempt)
+    print(
+        f"[ingest] chunk ({len(symbols)} symbols) FAILED after {max_retries} tries -- {last_error}"
+    )
+    return {}
+
+
+def ingest_many(
+    symbols: list[str],
+    days: int = 730,
+    *,
+    stocks_dir: str | None = None,
+    chunk_size: int = 50,
+    max_retries: int = 3,
+) -> dict[str, Path]:
+    """Ingest several tickers via chunked batch downloads; returns ``{symbol: parquet_path}``.
+
+    Symbols are normalized to Yahoo form (``BRK.B`` -> ``BRK-B``) and de-duplicated,
+    then fetched in batches of ``chunk_size`` (one ``yf.download`` per batch, with
+    retry/backoff) -- far fewer Yahoo requests than one call per ticker, which matters
+    at S&P-500 scale. A symbol that fails to download or normalize is reported and
+    skipped so one bad ticker (or a throttled chunk) never aborts the batch.
+    """
+    seen: set[str] = set()
+    unique: list[str] = []
+    for raw_symbol in symbols:
+        symbol = _norm_symbol(raw_symbol)
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            unique.append(symbol)
+
+    paths: dict[str, Path] = {}
+    for offset in range(0, len(unique), chunk_size):
+        chunk = unique[offset : offset + chunk_size]
+        frames = _download_chunk(chunk, days, max_retries)
+        for symbol in chunk:
+            raw = frames.get(symbol)
+            if raw is None:
+                print(f"[ingest] {symbol}: FAILED -- no data returned")
+                continue
+            try:
+                df = _normalize(raw)
+                if df.empty:
+                    print(f"[ingest] {symbol}: FAILED -- no usable rows after normalization")
+                    continue
+                for warning in _quality_warnings(df, days):
+                    print(f"[ingest] {symbol}: WARNING {warning}")
+                dest = _persist(df, symbol, stocks_dir)
+                paths[symbol] = dest
+                print(
+                    f"[ingest] {symbol}: {len(df)} rows "
+                    f"{df.index.min().date()}..{df.index.max().date()} "
+                    f"(last close {df['close'].iloc[-1]:.2f}) -> {dest}"
+                )
+            except (ValueError, OSError) as exc:
+                print(f"[ingest] {symbol}: FAILED -- {exc}")
     return paths

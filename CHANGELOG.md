@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-24
+
+### Changed
+
+- Bulk OHLC ingest (`ingest_many`) now fetches in **chunks via one `yf.download`
+  per batch** (default 50) with retry + exponential backoff, instead of one request
+  per ticker -- far fewer Yahoo requests and resilient to rate-limiting when the
+  watchlist is the full S&P 500. Symbols are normalized to Yahoo form (`BRK.B` ->
+  `BRK-B`) and de-duplicated before fetching; per-symbol failures still skip
+  non-fatally, and single-ticker `ingest()` shares the normalization.
+
 ## [0.11.1] - 2026-06-22
 
 ### Fixed
@@ -440,7 +451,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/kwcantrell/ophir/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kwcantrell/ophir/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kwcantrell/ophir/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/kwcantrell/ophir/compare/v0.10.2...v0.10.3
