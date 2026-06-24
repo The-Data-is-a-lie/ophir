@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-06-24
+
+### Changed
+
+- The manager LLM is no longer biased toward few names. Its prompt now says to hold
+  **as many or as few names as the evidence justifies** (concentrate in the best ideas
+  or diversify across several), instead of "prefer fewer, higher-conviction names."
+  Position count is the model's call; the per-name and gross caps in the risk gate
+  still bound the book.
+
 ## [0.11.2] - 2026-06-24
 
 ### Changed
@@ -451,7 +461,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/kwcantrell/ophir/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/kwcantrell/ophir/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/kwcantrell/ophir/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kwcantrell/ophir/compare/v0.10.3...v0.11.0
