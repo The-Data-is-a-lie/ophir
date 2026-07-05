@@ -56,6 +56,18 @@ class AgentSettings(BaseSettings):
     max_drawdown_kill: float = 0.20
     daily_loss_limit: float = 0.05
 
+    # intraday rework (Phase 0+): 15-min bars + forward-excursion targets.
+    # Inert until the intraday feed/train/loop paths consume them; the existing
+    # daily path ignores them entirely.
+    bar_minutes: int = 15
+    intraday_context_bars: int = 780
+    intraday_response_bars: int = 13
+    excursion_window_bars: int = 13
+    intraday_history_days: int = 730
+    rth_only: bool = True
+    data_feed_live: Literal["iex", "sip"] = "iex"
+    data_feed_backfill: Literal["iex", "sip"] = "sip"
+
     # broker credentials (optional until the execution phase)
     alpaca_key_id: SecretStr | None = None
     alpaca_secret_key: SecretStr | None = None

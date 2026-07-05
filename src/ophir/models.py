@@ -12,6 +12,7 @@ notable changes from the original version are:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -39,6 +40,8 @@ if TYPE_CHECKING:
 
 compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
 
+logger = logging.getLogger(__name__)
+
 
 # --------------------------------------------------------------------------- #
 # Hyper-parameters
@@ -51,11 +54,18 @@ class OHLCMulitClassParameters:
     ``emb_dim`` - dimensionality of the token embeddings.
     ``num_layers`` - number of transformer blocks.
     ``num_heads`` - number of attention heads.
+    ``num_features`` - number of input features per token (13 for the daily model).
+    ``use_learned_pe`` - add the fixed-length trainable positional encoding; set
+    ``False`` for long (intraday) sequences, which rely on ALiBi's relative bias.
+    ``max_pe_len`` - length of the trainable positional encoding when enabled.
     """
 
     emb_dim: int
     num_layers: int
     num_heads: int
+    num_features: int = 13
+    use_learned_pe: bool = True
+    max_pe_len: int = 512
 
     def __post_init__(self) -> None:
         assert self.emb_dim % 4 == 0  # emb_dim must be a multiple of 4
@@ -201,8 +211,7 @@ class CausalPrefixBlockMasks:
 
         causal_mask = or_masks(prefix, causal)
 
-        # Debug - can be removed in production
-        print(f"creating block mask of size {seq_len} with response size {response_size}...")
+        logger.debug("creating block mask of size %s with response size %s", seq_len, response_size)
 
         if pad_mask is not None:
             return and_masks(causal_mask, pad_mask)
@@ -365,9 +374,14 @@ class OHLCMulitClassPredictor(nn.Module):
 
     def __init__(self, hparams: OHLCMulitClassParameters) -> None:
         super().__init__()
-        # Positional encoding - we keep it simple and trainable
-        self.pe = nn.Parameter(torch.randn((1, 512, hparams.emb_dim)))
-        self.feature_mlp = nn.Linear(13, hparams.emb_dim)
+        # Positional encoding - trainable and fixed-length. Disabled for long
+        # (intraday) sequences, which rely on ALiBi's relative bias instead and
+        # would otherwise be capped at ``max_pe_len``.
+        if hparams.use_learned_pe:
+            self.pe = nn.Parameter(torch.randn((1, hparams.max_pe_len, hparams.emb_dim)))
+        else:
+            self.register_parameter("pe", None)
+        self.feature_mlp = nn.Linear(hparams.num_features, hparams.emb_dim)
         self.causal_masks = CausalPrefixBlockMasks()
         self.encoder = nn.ModuleList([TransformerBlock(hparams) for _ in range(hparams.num_layers)])
         self.out_ff = nn.Linear(hparams.emb_dim, 3)
@@ -398,10 +412,11 @@ class OHLCMulitClassPredictor(nn.Module):
         feature[:, -input.response_size :, :] = 0.0
         x = cast("torch.Tensor", self.feature_mlp(feature))
 
-        # Add positional encoding (safely slice to the actual length)
+        # Add positional encoding (safely slice to the actual length). Skipped
+        # when disabled (long/intraday sequences), where ALiBi carries position.
         _, seq_len, _ = x.shape
-        pe_slice = self.pe[:, :seq_len]
-        x = x + pe_slice
+        if self.pe is not None:
+            x = x + self.pe[:, :seq_len]
 
         # Build padding mask - True where no trade occurred
         padding_mask = ~input.trade_occured

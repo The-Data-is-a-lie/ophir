@@ -27,7 +27,18 @@ class LightningOHLCPredictor(L.LightningModule):
     learning rate for the ReZero parameters).
     """
 
-    def __init__(self, emb_dim: int, num_layers: int, num_heads: int) -> None:
+    def __init__(
+        self,
+        emb_dim: int,
+        num_layers: int,
+        num_heads: int,
+        *,
+        num_features: int = 13,
+        use_learned_pe: bool = True,
+        max_pe_len: int = 512,
+        smooth_l1_beta_close: float = 0.01,
+        smooth_l1_beta_range: float = 0.02,
+    ) -> None:
         """Build the wrapped predictor and save hyper-parameters.
 
         Parameters
@@ -39,12 +50,31 @@ class LightningOHLCPredictor(L.LightningModule):
             Number of transformer blocks.
         num_heads : int
             Number of attention heads.
+        num_features : int, optional
+            Number of input features per token. Defaults to 13 (the daily model).
+        use_learned_pe : bool, optional
+            Add the fixed-length trainable positional encoding. Defaults to
+            ``True``; set ``False`` for long (intraday) sequences that rely on
+            ALiBi instead.
+        max_pe_len : int, optional
+            Length of the trainable positional encoding when enabled. Defaults to 512.
+        smooth_l1_beta_close, smooth_l1_beta_range : float, optional
+            Smooth-L1 ``beta`` (transition knee) for the r_close and the
+            upside/downside targets. Defaults (0.01, 0.02) suit daily returns;
+            intraday per-bar returns are ~10-30x smaller and need ~0.001.
         """
         super().__init__()
         hparams: OHLCMulitClassParameters = OHLCMulitClassParameters(
-            emb_dim=emb_dim, num_layers=num_layers, num_heads=num_heads
+            emb_dim=emb_dim,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            num_features=num_features,
+            use_learned_pe=use_learned_pe,
+            max_pe_len=max_pe_len,
         )
         self.ohlc_predictor = OHLCMulitClassPredictor(hparams=hparams)
+        self.smooth_l1_beta_close = smooth_l1_beta_close
+        self.smooth_l1_beta_range = smooth_l1_beta_range
 
         self.save_hyperparameters()
         self._use_cache = False
@@ -125,7 +155,7 @@ class LightningOHLCPredictor(L.LightningModule):
         target_r_close = model_output.target_r_close
         predicted_r_close = model_output.predicted_r_close
         close_loss = F.smooth_l1_loss(
-            predicted_r_close, target_r_close, beta=0.01, reduction="none"
+            predicted_r_close, target_r_close, beta=self.smooth_l1_beta_close, reduction="none"
         )
 
         close_loss = self._masked_mean(close_loss, mask)
@@ -141,7 +171,9 @@ class LightningOHLCPredictor(L.LightningModule):
         target_upside = model_output.target_upside
         predicted_upside = model_output.predicted_upside
         upside_loss = self._masked_mean(
-            F.smooth_l1_loss(predicted_upside, target_upside, beta=0.02, reduction="none"),
+            F.smooth_l1_loss(
+                predicted_upside, target_upside, beta=self.smooth_l1_beta_range, reduction="none"
+            ),
             mask,
         )
         self.log(
@@ -156,7 +188,12 @@ class LightningOHLCPredictor(L.LightningModule):
         target_downside = model_output.target_downside
         predicted_downside = model_output.predicted_downside
         downside_loss = self._masked_mean(
-            F.smooth_l1_loss(predicted_downside, target_downside, beta=0.02, reduction="none"),
+            F.smooth_l1_loss(
+                predicted_downside,
+                target_downside,
+                beta=self.smooth_l1_beta_range,
+                reduction="none",
+            ),
             mask,
         )
         self.log(
