@@ -8,6 +8,11 @@ oldcode/
 trade-tracker/
 .claude/settings.local.json
 
+# local scratch / debugging artifacts (not part of the project)
+/_*.py
+/_*.csv
+/_compare/
+
 ### Below are common .gitignore DO NOT EDIT ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
