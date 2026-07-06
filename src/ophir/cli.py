@@ -11,6 +11,8 @@ import typer
 
 from ophir import register
 from ophir import train as train_cmd
+from ophir.agent.intraday import cli as intraday_cli
+from ophir.agent import report_cli
 
 # Model output can contain Unicode (curly quotes, non-breaking hyphens, ...) that a
 # console's default encoding (e.g. Windows cp1252) cannot represent. Reconfigure the
@@ -23,6 +25,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 app = typer.Typer(help="Ophir CLI")
 app.add_typer(register.app, name="register")
+app.add_typer(intraday_cli.app, name="intraday")
+app.add_typer(report_cli.app, name="report")
 app.command(name="train")(train_cmd.train)
 
 
