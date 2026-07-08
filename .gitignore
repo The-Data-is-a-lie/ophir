@@ -6,6 +6,8 @@ lightning_logs/
 .ophir/
 oldcode/
 trade-tracker/
+ophir-bot-hybrid/reports/
+ophir-bot-hybrid/logs/
 .claude/settings.local.json
 .claude/worktrees/
 autoresearch/runs/
