@@ -1,0 +1,33 @@
+# ε recalibration — 2026-07-08
+
+Per the harness spec (ε = 2·SE from ≥3 baseline seeds before any unattended
+session). First recalibration on the **full-depth store** (same-day deep
+re-ingest: 507 tickers, median ~6.5k rows, ~26y; the prior store was the
+trading loop's rolling 730-day window, so earlier smoke numbers are void).
+
+## Setup
+
+- Machine: RTX 4080 SUPER (16 GB), torch 2.10.0+cu130 + triton-windows 3.6.
+- Baseline: unmodified `train_experiment.py` at `c809640`, 10k steps.
+- Scorer: `eval_harness.py` acceptance split (2024–25), seeded 64/507 panel,
+  n = 15,744 rows per eval.
+- Train wall time: ~820–920 s per seed (drove the 600→1500 s time-box fix).
+
+## Results (`rank_ic_near`)
+
+| seed | rank_ic_near | best ckpt step |
+| ---- | ------------ | -------------- |
+| 0    | 0.14535      | 8500           |
+| 1    | 0.06826      | 3500           |
+| 2    | 0.07544      | 5000           |
+
+- mean = **0.09635**, std (ddof=1) = **0.04259**
+- **ε = 2·std = 0.0852** (floor 0.0069 not binding)
+
+## Implications
+
+- Single-seed measurement noise at 10k steps is large (seed spread 0.077);
+  ε = 0.0852 is intentionally conservative — only large, real effects clear
+  the acceptance bar. Session launch: `--epsilon 0.0852`.
+- Follow-up worth considering if sessions keep discarding plausible wins:
+  average 2–3 seeds per trial in the loop (3× GPU cost) to shrink ε.

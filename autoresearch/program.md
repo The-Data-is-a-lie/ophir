@@ -4,12 +4,14 @@ You (the proposer) improve a BERT-style masked transformer that forecasts
 three forward OHLC targets per day. **Objective: maximize `rank_ic_near`** —
 pooled daily cross-sectional Spearman rank-IC of `r_close` at trading-day
 offsets 1–5, on a fixed held-out split. Current baseline is iteration 0 of
-`results.tsv`; the multi-seed reference point is ≈ +0.066.
+`results.tsv`; the 3-seed reference on the full-depth store (2026-07-08) is
+mean ≈ +0.096 with LARGE single-seed spread (0.068–0.145 across seeds), so
+only changes with a real mechanism will clear ε.
 
 ## Ground rules
 
 - One focused change per iteration. Keep `train_experiment.py` runnable and
-  self-consistent; your run is killed at 10 minutes.
+  self-consistent; your run is killed at 25 minutes (baseline uses ~15).
 - You may inline any ophir component into `train_experiment.py` (e.g. copy a
   method into `ExperimentPredictor` and modify it) — but never edit files
   under `src/ophir`.
