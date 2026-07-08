@@ -32,9 +32,7 @@ def _minutes(
 
 
 def test_filter_rth_keeps_only_regular_hours() -> None:
-    df = _minutes(
-        "2026-06-08", ["08:00", "09:29", "09:30", "12:00", "15:59", "16:00", "18:00"]
-    )
+    df = _minutes("2026-06-08", ["08:00", "09:29", "09:30", "12:00", "15:59", "16:00", "18:00"])
     out = data._filter_rth(df)
     et = [t.tz_convert("America/New_York").strftime("%H:%M") for t in out.index]
     assert et == ["09:30", "12:00", "15:59"]  # pre/post-market + the 16:00 close excluded

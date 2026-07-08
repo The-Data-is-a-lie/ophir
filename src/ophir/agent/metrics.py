@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -41,7 +42,7 @@ def audit_path(override: str | None = None) -> Path:
 
 def load_events(path: str | None = None) -> pd.DataFrame:
     """Parse the JSONL audit trail into a DataFrame (one row per event)."""
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for line in audit_path(path).read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
@@ -55,7 +56,9 @@ def load_events(path: str | None = None) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Realized forward returns (from ingested daily closes)
 # ---------------------------------------------------------------------------
-def _forward_returns(signal: pd.DataFrame, horizons: tuple[int, ...], stocks_dir: str | None):
+def _forward_returns(
+    signal: pd.DataFrame, horizons: tuple[int, ...], stocks_dir: str | None
+) -> pd.DataFrame:
     """Add ``fwd_{h}`` columns: h-trading-day forward return from each row's asof close."""
     cache: dict[str, pd.Series | None] = {}
 
@@ -125,7 +128,7 @@ def signal_quality(signal: pd.DataFrame, sig: str, horizons: tuple[int, ...]) ->
         rows.append(
             {
                 "horizon": f"{h}d",
-                "n_obs": int(len(sub)),
+                "n_obs": len(sub),
                 "n_days": int(ic.notna().sum()),
                 "mean_IC": float(ic.mean()),
                 "decile_spread_%": float(dec.mean() * 100),
@@ -174,9 +177,11 @@ def run_metrics_report(
 
     # --- Traded signal (decision.cum_return, dated by the decision timestamp) ---
     if len(dec) and "cum_return" in dec.columns:
-        dec["asof"] = pd.to_datetime(dec["timestamp"], errors="coerce", utc=True).dt.tz_localize(
-            None
-        ).dt.normalize()
+        dec["asof"] = (
+            pd.to_datetime(dec["timestamp"], errors="coerce", utc=True)
+            .dt.tz_localize(None)
+            .dt.normalize()
+        )
         dec = _forward_returns(dec, horizons, stocks_dir)
         print("\n--- TRADED SIGNAL QUALITY  (decision.cum_return vs realized forward return) ---")
         print(signal_quality(dec, "cum_return", horizons).to_string(index=False))
@@ -189,16 +194,21 @@ def run_metrics_report(
         fwd = f"fwd_{h}"
         print(f"\n  realized {h}d forward return by action (BUY should beat SELL):")
         print(dec.groupby("action")[fwd].mean().mul(100).round(3).to_string())
-        sources = [s for s in dec["source"].dropna().unique()]
+        sources = list(dec["source"].dropna().unique())
         if len(sources) > 1:
             print(f"\n  {h}d forward return of BUY calls, by source (who picks better?):")
             buys = dec[dec["action"] == "BUY"]
-            print(buys.groupby("source")[fwd].agg(["count", "mean"]).assign(
-                mean=lambda d: (d["mean"] * 100).round(3)
-            ).to_string())
+            print(
+                buys.groupby("source")[fwd]
+                .agg(["count", "mean"])
+                .assign(mean=lambda d: (d["mean"] * 100).round(3))
+                .to_string()
+            )
         else:
-            print(f"\n  (only one decision source logged: {sources or ['none']} — "
-                  "no LLM-vs-quant comparison available yet)")
+            print(
+                f"\n  (only one decision source logged: {sources or ['none']} — "
+                "no LLM-vs-quant comparison available yet)"
+            )
 
     print("\n--- READING THIS ---")
     print(" mean_IC > 0  => the model ranks names correctly. Cross-sectionally, a sustained")
@@ -240,13 +250,15 @@ def append_snapshot(
 
     fc = events[events["event"] == "forecast"].copy()
     dec = events[events["event"] == "decision"].copy()
-    row["n_forecasts"] = int(len(fc))
-    row["n_decisions"] = int(len(dec))
+    row["n_forecasts"] = len(fc)
+    row["n_decisions"] = len(dec)
 
     if len(fc):
         fc["asof"] = pd.to_datetime(fc["asof"], errors="coerce")
         fc = _forward_returns(fc, (h,), stocks_dir)
-        row[f"fc_ic_{h}d"] = round(float(signal_quality(fc, "cum_return", (h,))["mean_IC"].iloc[0]), 4)
+        row[f"fc_ic_{h}d"] = round(
+            float(signal_quality(fc, "cum_return", (h,))["mean_IC"].iloc[0]), 4
+        )
 
     if len(dec) and "cum_return" in dec.columns:
         dec["asof"] = (
@@ -270,10 +282,12 @@ def append_snapshot(
         books = counterfactual_books(events, stocks_dir=stocks_dir)
         if "ollama" in books and "quant" in books:
             row["llm_minus_quant_equity"] = round(
-                float(books["ollama"]["equity_curve"][-1][1] - books["quant"]["equity_curve"][-1][1]),
+                float(
+                    books["ollama"]["equity_curve"][-1][1] - books["quant"]["equity_curve"][-1][1]
+                ),
                 4,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     path = _history_path(history_file)
@@ -307,7 +321,7 @@ def counterfactual_books(
     stocks_dir: str | None = None,
     cost_bps: float = 3.5,
     benchmark: str = "SPY",
-) -> dict[str, dict]:
+) -> dict[str, dict[str, Any]]:
     """Per-source equal-weight BUY-book equity curves (+ SPY) from the decision log.
 
     For each decision source, at each run date form an equal-weighted book of that
@@ -324,7 +338,9 @@ def counterfactual_books(
     if dec.empty:
         return {}
     dec["date"] = (
-        pd.to_datetime(dec["timestamp"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
+        pd.to_datetime(dec["timestamp"], errors="coerce", utc=True)
+        .dt.tz_localize(None)
+        .dt.normalize()
     )
     dec = dec.dropna(subset=["date"])
     dates = sorted(dec["date"].unique())
@@ -357,26 +373,36 @@ def counterfactual_books(
     years = max((pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days / 365.25, 1e-9)
     ppy = max(len(dates) - 1, 1) / years
 
-    def build_source(sub: pd.DataFrame) -> dict:
-        eq, w_old, rets, n_buys = 1.0, {}, [], 0
+    def build_source(sub: pd.DataFrame) -> dict[str, Any]:
+        eq, rets, n_buys = 1.0, [], 0
+        w_old: dict[str, float] = {}
         curve = [(str(pd.Timestamp(dates[0]).date()), 1.0)]
         for i in range(len(dates) - 1):
             d0, d1 = dates[i], dates[i + 1]
-            book = [str(s).upper() for s in sub.loc[(sub["date"] == d0) & (sub["action"] == "BUY"), "symbol"]]
+            book = [
+                str(s).upper()
+                for s in sub.loc[(sub["date"] == d0) & (sub["action"] == "BUY"), "symbol"]
+            ]
             n_buys += len(book)
             w_new = {s: 1.0 / len(book) for s in book} if book else {}
             vals = [ret_between(s, d0, d1) for s in book]
             vals = [v for v in vals if not (v is None or np.isnan(v))]
             port = float(np.mean(vals)) if vals else 0.0
-            turnover = sum(abs(w_new.get(s, 0.0) - w_old.get(s, 0.0)) for s in set(w_new) | set(w_old))
+            turnover = sum(
+                abs(w_new.get(s, 0.0) - w_old.get(s, 0.0)) for s in set(w_new) | set(w_old)
+            )
             eq *= 1.0 + (port - cost * turnover)
             rets.append(port - cost * turnover)
             curve.append((str(pd.Timestamp(d1).date()), eq))
             w_old = w_new
-        return {"equity_curve": curve, "returns": rets, "n_buys": n_buys,
-                "metrics": compute_metrics(rets, periods_per_year=ppy)}
+        return {
+            "equity_curve": curve,
+            "returns": rets,
+            "n_buys": n_buys,
+            "metrics": compute_metrics(rets, periods_per_year=ppy),
+        }
 
-    results: dict[str, dict] = {}
+    results: dict[str, dict[str, Any]] = {}
     for src in sorted(dec["source"].dropna().unique()):
         results[str(src)] = build_source(dec[dec["source"] == src])
 
@@ -389,8 +415,12 @@ def counterfactual_books(
         eq *= 1.0 + r
         brets.append(r)
         bcurve.append((str(pd.Timestamp(dates[i + 1]).date()), eq))
-    results[benchmark] = {"equity_curve": bcurve, "returns": brets, "n_buys": None,
-                          "metrics": compute_metrics(brets, periods_per_year=ppy)}
+    results[benchmark] = {
+        "equity_curve": bcurve,
+        "returns": brets,
+        "n_buys": None,
+        "metrics": compute_metrics(brets, periods_per_year=ppy),
+    }
     return results
 
 
@@ -406,7 +436,7 @@ def run_attribution_report(
         from ophir.agent.ingest import ingest
 
         ingest("SPY", stocks_dir=stocks_dir)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     books = counterfactual_books(events, stocks_dir=stocks_dir, cost_bps=cost_bps)
     if not books:
@@ -437,6 +467,9 @@ def run_attribution_report(
 
     if "ollama" in books and "quant" in books:
         gap = books["ollama"]["equity_curve"][-1][1] - books["quant"]["equity_curve"][-1][1]
-        print(f"\n LLM - quant final-equity gap: {gap:+.4f}  ({'LLM ahead' if gap > 0 else 'quant ahead'})")
+        print(
+            f"\n LLM - quant final-equity gap: {gap:+.4f}  "
+            f"({'LLM ahead' if gap > 0 else 'quant ahead'})"
+        )
     print("\n Small sample (weeks): a firming-up view of SELECTION skill, not final traded P&L.")
     print("=====================================================================================")

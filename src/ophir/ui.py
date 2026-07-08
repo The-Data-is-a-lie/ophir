@@ -8,7 +8,7 @@ assembled into a Gradio ``Blocks`` app launched by :func:`serve`.
 .. warning::
 
    Importing this module runs live network calls (Wikipedia, Yahoo Finance),
-   builds a :class:`~ophir.ticker.StockHanlder`, and loads a base checkpoint
+   builds a :class:`~ophir.ticker.StockHandler`, and loads a base checkpoint
    onto a CUDA device. It therefore cannot be imported by the documentation
    build and requires a GPU, a checkpoint, network access, and a local Ollama
    server at runtime.
@@ -26,10 +26,10 @@ import tqdm
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 
-from ophir.model_data import OHLCMulitClassPredictorInput
+from ophir.model_data import OHLCMultiClassPredictorInput
 from ophir.register import DATA_DIR, load_base_model_ckpt
 from ophir.ticker import (
-    StockHanlder,
+    StockHandler,
     StockStreamer,
     extract_model_data,
     get_sp_500_symbols,
@@ -44,7 +44,7 @@ elements_per_sample = 365
 response_size = 90
 offset = 90
 
-val_stock_handler = StockHanlder(
+val_stock_handler = StockHandler(
     seq_len=elements_per_sample,
     base_path=base_path,
     return_stock_id=False,
@@ -53,7 +53,6 @@ val_stock_handler = StockHanlder(
     offset=offset,
     min_year=2024,
     min_volume=1000,
-    winsorize_returns=True,
 )
 val_stock_handler.keep_stocks(sp_500)
 stock_streamers: dict[str, StockStreamer] = {}
@@ -78,7 +77,7 @@ llm = ChatOllama(model="gpt-oss:20b")
 # ------------------------------------------------------------------
 # 2️⃣  Helper functions
 # ------------------------------------------------------------------
-def get_ohlc(symbol: str) -> tuple[pd.DataFrame, OHLCMulitClassPredictorInput]:
+def get_ohlc(symbol: str) -> tuple[pd.DataFrame, OHLCMultiClassPredictorInput]:
     """Run the model on a ticker and reconstruct its candles.
 
     Parameters
@@ -88,7 +87,7 @@ def get_ohlc(symbol: str) -> tuple[pd.DataFrame, OHLCMulitClassPredictorInput]:
 
     Returns
     -------
-    tuple[pandas.DataFrame, OHLCMulitClassPredictorInput]
+    tuple[pandas.DataFrame, OHLCMultiClassPredictorInput]
         The reconstructed target/predicted OHLC frame and the populated model
         output object.
     """
@@ -185,19 +184,21 @@ def build_embedding_figure() -> go.Figure:
     empbeddings: list[torch.Tensor] = []
     r_closes: list[float] = []  # array
     for stock in tqdm.tqdm(val_stock_handler.stocks):
+        # Skip thin-history tickers before inference: a window shorter than the
+        # response horizon has no prefix to forecast from and would crash the
+        # response-block masking in OHLCMultiClassPredictor.
+        history = len(val_stock_handler[stock].preprocessed_ohlc_df)
+        if history < 250:
+            print(f"{stock} only covers {history}/{elements_per_sample} history.")
+            continue
         ohlcs, model_outputs = get_ohlc(stock)  # embeddings: np.ndarray
-        if len(ohlcs) < 250:
-            print(f"{stock} only covers {len(ohlcs)}/{elements_per_sample} history.")
-        else:
-            # r_closes.append((model_outputs.predicted_r_close.mean(dim=1)))
-            response_size = (
-                model_outputs.response_size.cpu().numpy() + 1
-            )  # add one to include last history day
-            r_closes.append(
-                percent_return(ohlcs.iloc[-response_size:]["predicted_close"].to_numpy())
-            )
-            assert model_outputs.stock_embeddings is not None
-            empbeddings.append(model_outputs.stock_embeddings)
+        # r_closes.append((model_outputs.predicted_r_close.mean(dim=1)))
+        response_size = (
+            model_outputs.response_size.cpu().numpy() + 1
+        )  # add one to include last history day
+        r_closes.append(percent_return(ohlcs.iloc[-response_size:]["predicted_close"].to_numpy()))
+        assert model_outputs.stock_embeddings is not None
+        empbeddings.append(model_outputs.stock_embeddings)
 
     # Concatenate along the sample axis and force float32
 

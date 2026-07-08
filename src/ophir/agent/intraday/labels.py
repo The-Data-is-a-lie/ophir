@@ -10,6 +10,7 @@ heavily-overlapping intraday labels are not treated as IID. See blueprint P1/§6
 from __future__ import annotations
 
 import math
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
@@ -24,14 +25,14 @@ def bar_volatility(close: pd.Series, span: int = 26) -> pd.Series:
     return r.ewm(span=span, min_periods=max(2, span // 2)).std()
 
 
-def _day_last_index(end_utc: pd.Series) -> np.ndarray:
+def _day_last_index(end_utc: pd.Series) -> np.ndarray[Any, Any]:
     """For each bar, the positional index of the last bar sharing its ET date."""
     dates = pd.to_datetime(end_utc, utc=True).dt.tz_convert(_ET).dt.date.to_numpy()
     pos = pd.Series(np.arange(len(dates)))
-    return pos.groupby(dates).transform("max").to_numpy()
+    return cast("np.ndarray[Any, Any]", pos.groupby(dates).transform("max").to_numpy())
 
 
-def _average_uniqueness(t1_pos: np.ndarray, n: int) -> np.ndarray:
+def _average_uniqueness(t1_pos: np.ndarray[Any, Any], n: int) -> np.ndarray[Any, Any]:
     """AFML average uniqueness: down-weight events with overlapping [entry, t1] spans."""
     concurrency = np.zeros(n, dtype="float64")
     for i in range(n):
@@ -119,9 +120,7 @@ def triple_barrier_labels(
 
     weight = _average_uniqueness(t1_pos, n)
     meta = np.where(np.isfinite(ret), (ret > 0.0).astype("float64"), np.nan)
-    t1 = np.array(
-        [end.iloc[p].isoformat() if p >= 0 else None for p in t1_pos], dtype=object
-    )
+    t1 = np.array([end.iloc[p].isoformat() if p >= 0 else None for p in t1_pos], dtype=object)
 
     out = pd.DataFrame({"t1": t1, "ret": ret, "bin_tb": bin_tb, "meta": meta, "weight": weight})
     out.index = pd.DatetimeIndex(end, name="bar_end")

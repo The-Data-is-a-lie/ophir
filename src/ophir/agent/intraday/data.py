@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd  # type: ignore[import-untyped]
 
@@ -30,6 +30,8 @@ _BAR_COLS = ["open", "high", "low", "close", "volume", "trade_count", "vwap"]
 _ET = "America/New_York"
 _RTH_OPEN = "09:30"
 _RTH_CLOSE = "16:00"
+# `datetime.UTC` (py3.11) trips mypy's py3.10 target; `timezone.utc` works on both.
+_UTC = dt.timezone.utc  # noqa: UP017
 # Free-tier SIP cannot see the most recent 15 min; use 16 for margin.
 _FREE_SIP_DELAY = dt.timedelta(minutes=16)
 # Chunk long backfills so each request stays bounded (alpaca-py paginates within).
@@ -66,7 +68,7 @@ def _as_utc(ts: object) -> dt.datetime:
     """Coerce a timestamp-like to a tz-aware UTC ``datetime``."""
     out = pd.Timestamp(ts)
     out = out.tz_localize("UTC") if out.tzinfo is None else out.tz_convert("UTC")
-    return out.to_pydatetime()
+    return cast("dt.datetime", out.to_pydatetime())
 
 
 def _client() -> StockHistoricalDataClient:
@@ -85,7 +87,7 @@ def _client() -> StockHistoricalDataClient:
 
 
 def _filter_rth(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only regular-hours bars (09:30–16:00 ET, close-exclusive); index stays UTC."""
+    """Keep only regular-hours bars (09:30-16:00 ET, close-exclusive); index stays UTC."""
     et = df.tz_convert(_ET)
     et = et.between_time(_RTH_OPEN, _RTH_CLOSE, inclusive="left")
     return et.tz_convert("UTC")
@@ -117,7 +119,7 @@ def fetch_minute_bars(
     client = client or _client()
 
     start_dt = _as_utc(start)
-    end_dt = min(_as_utc(end), dt.datetime.now(dt.timezone.utc) - _FREE_SIP_DELAY)
+    end_dt = min(_as_utc(end), dt.datetime.now(_UTC) - _FREE_SIP_DELAY)
     if end_dt <= start_dt:
         return _empty_minute_frame()
 
@@ -129,7 +131,7 @@ def fetch_minute_bars(
         feed=DataFeed(feed),
         adjustment=Adjustment.ALL,
     )
-    raw = client.get_stock_bars(req).df
+    raw = client.get_stock_bars(req).df  # type: ignore[union-attr]
     if raw is None or raw.empty:
         return _empty_minute_frame()
 
@@ -169,7 +171,7 @@ def backfill_symbol(
     days = days or s.intraday_history_days
     client = client or _client()
 
-    end = dt.datetime.now(dt.timezone.utc) - _FREE_SIP_DELAY
+    end = dt.datetime.now(_UTC) - _FREE_SIP_DELAY
     start = end - dt.timedelta(days=days)
 
     frames: list[pd.DataFrame] = []
@@ -243,7 +245,7 @@ def backfill_many(
             )
             if rows:
                 out[symbol] = path
-        except Exception as exc:  # noqa: BLE001 -- one bad symbol must not abort the batch
+        except Exception as exc:
             print(f"[intraday] {symbol}: FAILED -- {type(exc).__name__}: {exc}")
     return out
 
@@ -302,8 +304,17 @@ def build_dollar_bars(minute_df: pd.DataFrame, dollar_threshold: float) -> pd.Da
 
 def _empty_dollar_frame() -> pd.DataFrame:
     cols = [
-        "open", "high", "low", "close", "volume", "trade_count",
-        "dollar_volume", "start", "end", "n_minutes", "vwap",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trade_count",
+        "dollar_volume",
+        "start",
+        "end",
+        "n_minutes",
+        "vwap",
     ]
     return pd.DataFrame({c: pd.Series(dtype="float64") for c in cols})
 

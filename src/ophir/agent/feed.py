@@ -132,7 +132,7 @@ def latest_window_tensors(
 
     Reuses :func:`ophir.ticker.extract_features` and
     :func:`ophir.ticker.extract_model_data`, so the result matches
-    :class:`ophir.model_data.OHLCMulitClassPredictorInput`.
+    :class:`ophir.model_data.OHLCMultiClassPredictorInput`.
 
     Parameters
     ----------

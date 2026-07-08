@@ -12,12 +12,39 @@ from ophir.ticker import extract_features, extract_model_data
 # --------------------------------------------------------------------------- #
 
 
+def test_extract_features_rejects_duplicate_dates():
+    # Duplicate timestamps otherwise crash deep inside the calendar reindex with
+    # an opaque pandas error; fail loudly at the boundary instead.
+    idx = pd.to_datetime(["2024-01-01", "2024-01-01", "2024-01-02"])
+    df = pd.DataFrame(
+        {
+            "high": [11.0, 11.0, 12.0],
+            "low": [9.0, 9.0, 10.0],
+            "close": [10.0, 10.0, 11.0],
+            "volume": [1e6, 1e6, 1e6],
+        },
+        index=idx,
+    )
+    with pytest.raises(ValueError, match="unique"):
+        extract_features(df)
+
+
+def test_extract_features_excludes_time_delta(ohlcv_df):
+    # time_delta was a near-binary, redundant (vs. positional) feature with an
+    # overloaded 0 and a log(0) hazard; dropped in favour of a 12-feature set.
+    out = extract_features(ohlcv_df)
+    assert "time_delta" not in out.columns
+    feats = [c for c in out.columns if c not in ("trade_occured", "feature_valid")]
+    assert len(feats) == 12
+
+
 def test_extract_features_column_layout(ohlcv_df, feature_cols):
     out = extract_features(ohlcv_df)
 
-    # 13 features + the trailing bool ``trade_occured`` flag (14 total).
-    assert list(out.columns) == [*feature_cols, "trade_occured"]
+    # 12 features + ``trade_occured`` + ``feature_valid`` (14 total).
+    assert list(out.columns) == [*feature_cols, "trade_occured", "feature_valid"]
     assert out["trade_occured"].dtype == np.bool_
+    assert out["feature_valid"].dtype == np.bool_
 
 
 def test_extract_features_reindexes_to_daily_calendar(ohlcv_df):
@@ -43,33 +70,37 @@ def test_extract_features_has_no_nans(ohlcv_df):
     assert not out.isna().to_numpy().any()
 
 
-def test_extract_features_winsorize_clips_spike(make_ohlcv):
-    df = make_ohlcv(n_days=1000, seed=7)
-    df.iloc[500, df.columns.get_loc("close")] *= 5.0  # inject a return spike
-
-    plain = extract_features(df, winsorize_returns=False)
-    clipped = extract_features(df, winsorize_returns=True)
-
-    assert clipped["r_close"].abs().max() < plain["r_close"].abs().max()
-
-
 def test_extract_features_single_row(make_ohlcv, feature_cols):
     out = extract_features(make_ohlcv(n_days=1))
 
     assert len(out) == 1
-    assert list(out.columns) == [*feature_cols, "trade_occured"]
+    assert list(out.columns) == [*feature_cols, "trade_occured", "feature_valid"]
     assert bool(out["trade_occured"].iloc[0])
 
 
 def test_extract_features_empty_input_early_return(empty_ohlcv_df, feature_cols):
     # Quirk (pinned): the empty-input branch returns *before* padding/slicing,
     # so the result is the un-sliced frame -- original OHLCV columns plus the
-    # 13 intermediate feature columns, but WITHOUT ``trade_occured``.
+    # 12 intermediate feature columns, but WITHOUT ``trade_occured``.
     out = extract_features(empty_ohlcv_df)
 
     assert out.empty
     assert list(out.columns) == ["high", "low", "close", "volume", *feature_cols]
     assert "trade_occured" not in out.columns
+
+
+def test_extract_features_flags_rolling_warmup_as_invalid(ohlcv_df):
+    out = extract_features(ohlcv_df)
+
+    assert "feature_valid" in out.columns
+    assert out["feature_valid"].dtype == np.bool_
+    # The 60-day rolling features are undefined for the first 59 trading rows;
+    # those must be flagged invalid rather than silently zero-filled.
+    valid = out["feature_valid"]
+    trading = out["trade_occured"]
+    first_valid_trading_day = valid[trading].idxmax()
+    assert valid[trading].iloc[:59].sum() == 0
+    assert valid.loc[first_valid_trading_day]
 
 
 # --------------------------------------------------------------------------- #
@@ -112,7 +143,17 @@ def test_extract_model_data_array_response_size_double_wraps(feature_window):
     assert torch.equal(md["response_size"], torch.tensor([[5]]))
 
 
-def test_np_bool_alias_available():
-    # ``extract_model_data`` relies on ``np.bool`` (restored in numpy 2.0).
-    # The project pins numpy>=2.2.6; this guard fails loudly on a downgrade.
-    assert hasattr(np, "bool")
+def test_extract_model_data_includes_identity_when_stock_id_given(feature_window):
+    payload = extract_model_data(feature_window, response_size=5, stock_id=7)
+
+    assert payload["stock_id"].item() == 7
+    assert payload["stock_id"].dtype == torch.long
+    assert payload["date_ordinal"].shape[0] == len(feature_window)
+    assert payload["date_ordinal"].dtype == torch.int64
+
+
+def test_extract_model_data_excludes_bool_columns_from_features(feature_window, feature_cols):
+    # The dtype filter must drop both bool columns (``trade_occured`` /
+    # ``feature_valid``), leaving exactly the float feature columns.
+    md = extract_model_data(feature_window, response_size=5)
+    assert md["feature_input"].shape[1] == len(feature_cols)

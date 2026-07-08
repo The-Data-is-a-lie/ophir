@@ -18,9 +18,17 @@ def _synth_bars(n: int = 120) -> pd.DataFrame:
     vol = 1000.0 + (np.arange(n) % 7) * 100.0
     return pd.DataFrame(
         {
-            "open": openp, "high": high, "low": low, "close": close,
-            "volume": vol, "trade_count": vol / 10.0, "dollar_volume": close * vol,
-            "vwap": close, "start": idx, "end": idx, "n_minutes": np.full(n, 5.0),
+            "open": openp,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": vol,
+            "trade_count": vol / 10.0,
+            "dollar_volume": close * vol,
+            "vwap": close,
+            "start": idx,
+            "end": idx,
+            "n_minutes": np.full(n, 5.0),
         }
     )
 

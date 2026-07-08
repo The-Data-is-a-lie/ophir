@@ -23,12 +23,30 @@ import pandas as pd  # type: ignore[import-untyped]
 from ophir.agent.intraday.dataset import build_training_frame, feature_columns
 
 DEFAULT_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM", "V",
-    "UNH", "XOM", "JNJ", "WMT", "MA", "PG", "HD", "COST", "KO", "BAC",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "TSLA",
+    "AVGO",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "JNJ",
+    "WMT",
+    "MA",
+    "PG",
+    "HD",
+    "COST",
+    "KO",
+    "BAC",
 ]
 
 
-def _fit_lightgbm(x: pd.DataFrame, y: np.ndarray, w: np.ndarray) -> Any:
+def _fit_lightgbm(x: pd.DataFrame, y: np.ndarray[Any, Any], w: np.ndarray[Any, Any]) -> Any:
     import lightgbm as lgb
 
     model = lgb.LGBMClassifier(
@@ -48,7 +66,7 @@ def _fit_lightgbm(x: pd.DataFrame, y: np.ndarray, w: np.ndarray) -> Any:
     return model
 
 
-def _annualized_sharpe(net: np.ndarray, span_days: float) -> float:
+def _annualized_sharpe(net: np.ndarray[Any, Any], span_days: float) -> float:
     if len(net) < 2 or net.std(ddof=1) == 0.0 or span_days <= 0:
         return 0.0
     trades_per_year = len(net) / (span_days / 365.25)
@@ -74,8 +92,12 @@ def run_gate(
     symbols = symbols or DEFAULT_UNIVERSE
     print(f"[gate] assembling features+labels for {len(symbols)} symbols ...")
     df = build_training_frame(
-        symbols, stocks_dir=stocks_dir, pt_mult=pt_mult, sl_mult=sl_mult,
-        max_hold=max_hold, vol_span=vol_span,
+        symbols,
+        stocks_dir=stocks_dir,
+        pt_mult=pt_mult,
+        sl_mult=sl_mult,
+        max_hold=max_hold,
+        vol_span=vol_span,
     ).sort_index()
     if df.empty:
         raise RuntimeError("No training data assembled -- backfill the universe first.")
@@ -145,28 +167,41 @@ def run_gate(
 
     bps = 1e4
     cost_label = (
-        f"measured avg {mean_cost_bps:.2f} bps" if cost_by_symbol else f"{cost_bps:.1f} bps (assumed)"
+        f"measured avg {mean_cost_bps:.2f} bps"
+        if cost_by_symbol
+        else f"{cost_bps:.1f} bps (assumed)"
     )
     print("\n================= G2 COST GATE (lockbox, scored once) =================")
     print(f" universe:            {len(symbols)} names   round-trip cost: {cost_label}")
     print(f" trade threshold:     p >= {thr:.3f}  (chosen on validation)")
-    print(f" lockbox trades:      {int(sel.sum()):,} of {int(m_test.sum()):,} events "
-          f"over ~{span_days / 365.25:.2f}y")
-    print(f" base rate (always-long, gross):   {base_gross * bps:+.2f} bps/trade  "
-          f"(net {base_gross * bps - mean_cost_bps:+.2f})   <- market drift, not alpha")
+    print(
+        f" lockbox trades:      {int(sel.sum()):,} of {int(m_test.sum()):,} events "
+        f"over ~{span_days / 365.25:.2f}y"
+    )
+    print(
+        f" base rate (always-long, gross):   {base_gross * bps:+.2f} bps/trade  "
+        f"(net {base_gross * bps - mean_cost_bps:+.2f})   <- market drift, not alpha"
+    )
     print(f" model top-quintile (net):         {top_net * bps:+.2f} bps/trade")
     print(f" model bottom-quintile (net):      {bot_net * bps:+.2f} bps/trade")
-    print(f" skill spread (top - bottom):      {(top_net - bot_net) * bps:+.2f} bps  "
-          f"(>0 = ranking has signal)")
+    print(
+        f" skill spread (top - bottom):      {(top_net - bot_net) * bps:+.2f} bps  "
+        f"(>0 = ranking has signal)"
+    )
     print(f" SELECTED trades (net):            {sel_net_mean * bps:+.2f} bps/trade")
     print(f" annualized net Sharpe:            {sharpe:.2f}   (hit rate {hit:.1%})")
     print(" cost sensitivity (selected net bps/trade):")
     for cb in (0.0, 2.0, 5.0, 10.0):
         c = cb / 1e4
         s2 = rt_[sel] - c
-        print(f"     @ {cb:4.1f} bps: {float(s2.mean()) * bps:+.2f} bps/trade   Sharpe "
-              f"{_annualized_sharpe(s2, span_days):.2f}")
-    print(f"\n VERDICT: {'PASS -> proceed to P3 (deep model)' if passed else 'FAIL -> stop; no net-of-cost edge'}")
+        print(
+            f"     @ {cb:4.1f} bps: {float(s2.mean()) * bps:+.2f} bps/trade   Sharpe "
+            f"{_annualized_sharpe(s2, span_days):.2f}"
+        )
+    verdict = (
+        "PASS -> proceed to P3 (deep model)" if passed else "FAIL -> stop; no net-of-cost edge"
+    )
+    print(f"\n VERDICT: {verdict}")
     print("=======================================================================\n")
 
     return {

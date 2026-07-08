@@ -60,7 +60,9 @@ def extract_intraday_features(
 
     # Microstructure-lite (activity / participation).
     n_minutes = df["n_minutes"].astype("float64")
-    feat["trade_intensity"] = df["trade_count"].astype("float64") / n_minutes.where(n_minutes > 0, 1.0)
+    feat["trade_intensity"] = df["trade_count"].astype("float64") / n_minutes.where(
+        n_minutes > 0, 1.0
+    )
     feat["bar_minutes"] = n_minutes
 
     med = windows[len(windows) // 2]

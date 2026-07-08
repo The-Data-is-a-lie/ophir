@@ -111,7 +111,7 @@ def _days_to_opex(as_of: dt.date) -> int:
 
 def _macro_extras(cutoff: Any) -> dict[str, Any]:
     """FRED credit/conditions/curve levels (if a key is registered) + the OPEX gate."""
-    from ophir.register import get_fred_key
+    from ophir.agent.fred import get_fred_key
 
     end = str(cutoff.date())
     out: dict[str, Any] = dict.fromkeys(_FRED_SERIES)

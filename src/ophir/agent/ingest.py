@@ -3,7 +3,7 @@
 Pulls history for a ticker, normalizes it to the schema
 :func:`ophir.ticker.extract_features` consumes, runs non-fatal quality checks,
 and writes it to the Hive layout ``symbol=<SYMBOL>/data.parquet`` so the
-existing ``StockHanlder`` / ``StockStreamer`` pipeline reads it unchanged.
+existing ``StockHandler`` / ``StockStreamer`` pipeline reads it unchanged.
 
 Yahoo's ``auto_adjust=True`` output is already split/dividend-adjusted, so the
 separate split back-adjustment in :mod:`ophir.ticker` is intentionally skipped

@@ -9,8 +9,8 @@ import torch
 
 
 @dataclass(kw_only=True, slots=True)
-class OHLCMulitClassPredictorInput:
-    """Structured input/output container for :class:`OHLCMulitClassPredictor`.
+class OHLCMultiClassPredictorInput:
+    """Structured input/output container for :class:`OHLCMultiClassPredictor`.
 
     The same object is threaded through the model: features and targets are
     set by the caller, and ``model_output`` / ``stock_embeddings`` are written
@@ -19,7 +19,7 @@ class OHLCMulitClassPredictorInput:
     Attributes
     ----------
     feature_input : torch.FloatTensor
-        Shape ``(B, S, 13)`` feature vector used as model input.
+        Shape ``(B, S, 12)`` feature vector used as model input.
     response_size : torch.LongTensor
         Scalar; how many trailing days the model predicts.
     trade_occured : torch.BoolTensor
@@ -30,6 +30,12 @@ class OHLCMulitClassPredictorInput:
         Shape ``(B, S, 3)`` model predictions (written by the model).
     time : numpy.ndarray, optional
         Timestamps for each day in ``feature_input``.
+    stock_id : torch.LongTensor, optional
+        Per-example integer stock id ``(B,)``, carried only on the eval path
+        (opt-in) so predictions can be grouped by ticker. ``None`` in training.
+    date_ordinal : torch.LongTensor, optional
+        Per-day calendar-day ordinal ``(B, S)``, carried only on the eval path
+        (opt-in) so a day's cross-section can be identified. ``None`` in training.
     stock_embeddings : torch.FloatTensor
         Pooled per-example stock embeddings (written by the model).
     """
@@ -40,6 +46,8 @@ class OHLCMulitClassPredictorInput:
     targets: torch.Tensor
     model_output: torch.Tensor | None = None
     time: np.ndarray[Any, Any] | None = None
+    stock_id: torch.Tensor | None = None
+    date_ordinal: torch.Tensor | None = None
     stock_embeddings: torch.Tensor | None = None
     return_full_targets: bool = False
     r_close_index: ClassVar[int] = 0
@@ -114,12 +122,12 @@ class OHLCMulitClassPredictorInput:
         assert self.model_output is not None
         return self.chunk(self.model_output, self.downside_index)
 
-    def to_cuda(self) -> OHLCMulitClassPredictorInput:
+    def to_cuda(self) -> OHLCMultiClassPredictorInput:
         """Move ``feature_input``, ``targets``, and ``trade_occured`` to CUDA.
 
         Returns
         -------
-        OHLCMulitClassPredictorInput
+        OHLCMultiClassPredictorInput
             ``self``, with the tensors moved in place.
         """
         self.feature_input = self.feature_input.cuda()
@@ -133,12 +141,12 @@ class OHLCMulitClassPredictorInput:
         Returns
         -------
         numpy.ndarray
-            A ``(B, 3)`` array of the embeddings (averaged over the sequence
-            axis) projected into the leading 3-D PCA subspace.
+            A ``(B, 3)`` array of the per-stock embeddings projected into the
+            leading 3-D PCA subspace.
         """
         assert self.stock_embeddings is not None
         with torch.no_grad():
-            stock_embeddings = self.stock_embeddings.mean(1)
+            stock_embeddings = self.stock_embeddings
             _u, _s, v = torch.pca_lowrank(stock_embeddings, q=3)
             transformed_data = torch.matmul(stock_embeddings, v)
         return transformed_data.cpu().numpy()

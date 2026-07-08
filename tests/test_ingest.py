@@ -67,7 +67,7 @@ def test_latest_window_tensors_shapes(fake_yahoo, tmp_path):
     ingest("TEST", days=730, stocks_dir=str(tmp_path))
 
     md = latest_window_tensors("TEST", seq_len=30, response_size=10, stocks_dir=str(tmp_path))
-    assert tuple(md["feature_input"].shape) == (30, 13)
+    assert tuple(md["feature_input"].shape) == (30, 12)
     assert tuple(md["targets"].shape) == (30, 3)
     assert tuple(md["trade_occured"].shape) == (30,)
 

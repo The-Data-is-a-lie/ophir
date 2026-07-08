@@ -14,7 +14,9 @@ app = typer.Typer(help="Offline analytics over the trading-agent audit trail.")
 
 @app.command()
 def metrics(
-    audit_file: str | None = typer.Option(None, help="Path to agent-audit.jsonl (default: <DATA_DIR>)"),
+    audit_file: str | None = typer.Option(
+        None, help="Path to agent-audit.jsonl (default: <DATA_DIR>)"
+    ),
     stocks_dir: str | None = typer.Option(None, help="Override the daily stocks parquet root"),
     snapshot: bool = typer.Option(
         False, "--snapshot", help="Append a headline row to the metrics history for trend-tracking"
@@ -37,7 +39,9 @@ def history() -> None:
 @app.command()
 def attribution(
     cost_bps: float = typer.Option(3.5, help="Cost per unit turnover, in basis points"),
-    audit_file: str | None = typer.Option(None, help="Path to agent-audit.jsonl (default: <DATA_DIR>)"),
+    audit_file: str | None = typer.Option(
+        None, help="Path to agent-audit.jsonl (default: <DATA_DIR>)"
+    ),
     stocks_dir: str | None = typer.Option(None, help="Override the daily stocks parquet root"),
 ) -> None:
     """Counterfactual equity: quant-only vs LLM-only vs SPY, from the decision log."""

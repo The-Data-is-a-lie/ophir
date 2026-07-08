@@ -52,7 +52,7 @@ def measure_spread_bps(
                             limit=quotes_per_snap,
                         )
                     ).df
-                except Exception:  # noqa: BLE001 -- skip a bad window, keep sampling
+                except Exception:
                     continue
                 if q is None or q.empty or "bid_price" not in q.columns:
                     continue

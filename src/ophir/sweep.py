@@ -1,0 +1,272 @@
+"""Optuna hyperparameter sweep for the OHLC forecaster.
+
+Searches optimizer, loss-weight, and architecture-tier hyperparameters by mean
+cross-sectional rank-IC on ``r_close`` (the model logs ``val_rank_ic`` when the
+validation loader carries identity). Each trial runs a reduced-budget *proxy*
+training with a pruning callback; the best configs are then retrained at full
+budget and scored with the offline eval report (:func:`confirm_top`).
+
+Requires CUDA for the actual trials; the pure helpers (search space, top-K
+selection) are CPU-safe and unit-tested.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import TYPE_CHECKING, Any
+
+from lightning.pytorch.callbacks import Callback
+
+if TYPE_CHECKING:
+    import optuna
+    from lightning.pytorch import LightningModule, Trainer
+
+#: Architecture presets; each satisfies emb_dim % 4 == 0, emb_dim % num_heads
+#: == 0, and head_dim >= 16 (the flex-attention CUDA floor).
+SIZE_TIERS: dict[str, dict[str, int]] = {
+    "small": {"emb_dim": 64, "num_layers": 4, "num_heads": 4},
+    "base": {"emb_dim": 128, "num_layers": 6, "num_heads": 8},
+    "large": {"emb_dim": 192, "num_layers": 8, "num_heads": 12},
+}
+
+
+def sample_config(trial: optuna.Trial) -> dict[str, Any]:
+    """Sample one hyperparameter configuration as ``run_training`` kwargs."""
+    tier = trial.suggest_categorical("size_tier", list(SIZE_TIERS))
+    arch = SIZE_TIERS[tier]
+    beta2 = trial.suggest_float("beta2", 0.9, 0.999)
+    # close_weight is fixed at 1.0: compute_loss normalizes the three weights by
+    # their sum, so sampling all three would only add a redundant scale axis.
+    return {
+        "emb_dim": arch["emb_dim"],
+        "num_layers": arch["num_layers"],
+        "num_heads": arch["num_heads"],
+        "lr": trial.suggest_float("lr", 5e-5, 2e-3, log=True),
+        "rezero_lr": trial.suggest_float("rezero_lr", 5e-5, 3e-3, log=True),
+        "weight_decay": trial.suggest_float("weight_decay", 1e-3, 1e-1, log=True),
+        "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.1),
+        "loss_decay": trial.suggest_float("loss_decay", 0.3, 1.0),
+        "betas": (0.9, beta2),
+        "close_weight": 1.0,
+        "upside_weight": trial.suggest_float("upside_weight", 0.25, 1.0),
+        "downside_weight": trial.suggest_float("downside_weight", 0.25, 1.0),
+    }
+
+
+class _OptunaPruning(Callback):
+    """Report ``val_rank_ic`` to an Optuna trial and prune unpromising runs."""
+
+    def __init__(self, trial: optuna.Trial) -> None:
+        self._trial = trial
+        self.best_val_rank_ic: float | None = None
+
+    def on_validation_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        import optuna
+
+        metric = trainer.callback_metrics.get("val_rank_ic")
+        if metric is None:
+            return
+        value = float(metric)
+        if self.best_val_rank_ic is None or value > self.best_val_rank_ic:
+            self.best_val_rank_ic = value
+        step = trainer.global_step
+        self._trial.report(value, step)
+        if self._trial.should_prune():
+            raise optuna.TrialPruned(f"pruned at step {step}")
+
+
+def select_top_configs(study: optuna.Study, k: int) -> list[dict[str, Any]]:
+    """Return the configs of the top-``k`` completed trials, best first."""
+    import optuna
+
+    completed = [
+        t
+        for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+    ]
+    completed.sort(key=lambda t: float(t.value), reverse=True)  # type: ignore[arg-type]
+    return [t.user_attrs["config"] for t in completed[:k]]
+
+
+def objective(trial: optuna.Trial, *, proxy_kwargs: dict[str, Any], base_seed: int) -> float:
+    """Run one proxy trial; return its best ``val_rank_ic`` (maximize)."""
+    import optuna
+
+    config = sample_config(trial)
+    trial.set_user_attr("config", config)
+    from ophir.train import run_training
+
+    pruning_cb = _OptunaPruning(trial)
+    run_training(
+        **proxy_kwargs,
+        **config,
+        val_identity=True,
+        seed=base_seed + trial.number,
+        callbacks=[pruning_cb],
+    )
+    if pruning_cb.best_val_rank_ic is None:
+        raise optuna.TrialPruned("no val_rank_ic was reported")
+    return pruning_cb.best_val_rank_ic
+
+
+def _build_sampler(name: str, seed: int) -> optuna.samplers.BaseSampler:
+    """Construct the Optuna sampler selected by ``name`` (``"tpe"`` | ``"random"``)."""
+    import optuna
+
+    if name == "tpe":
+        return optuna.samplers.TPESampler(seed=seed)
+    if name == "random":
+        return optuna.samplers.RandomSampler(seed=seed)
+    raise ValueError(f"unknown sampler {name!r}; expected 'tpe' or 'random'")
+
+
+def _build_pruner(prune: bool) -> optuna.pruners.BasePruner:
+    """ASHA pruner when ``prune``; a no-op pruner otherwise (clean control runs)."""
+    import optuna
+
+    return optuna.pruners.SuccessiveHalvingPruner() if prune else optuna.pruners.NopPruner()
+
+
+def run_sweep(
+    *,
+    n_trials: int,
+    study_name: str,
+    storage: str,
+    base_seed: int,
+    proxy_kwargs: dict[str, Any],
+    sampler: str = "tpe",
+    prune: bool = True,
+) -> optuna.Study:
+    """Create/resume the SQLite study and run ``n_trials`` proxy trials."""
+    import optuna
+
+    sampler_obj = _build_sampler(sampler, base_seed)
+    pruner = _build_pruner(prune)
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        sampler=sampler_obj,
+        pruner=pruner,
+        direction="maximize",
+        load_if_exists=True,
+    )
+    study.optimize(
+        lambda trial: objective(trial, proxy_kwargs=proxy_kwargs, base_seed=base_seed),
+        n_trials=n_trials,
+    )
+    return study
+
+
+def compute_importances(study: optuna.Study) -> dict[str, Any]:
+    """Hyperparameter importances over the study's completed trials.
+
+    Returns fANOVA and mean-decrease-impurity (MDI) importances plus the number
+    of completed trials. fANOVA needs at least two completed trials with varying
+    parameters; when there are too few, the importance maps come back empty
+    rather than raising, so callers can still report ``n_completed``.
+    """
+    import optuna
+
+    completed = [
+        t
+        for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+    ]
+    if len(completed) < 2:
+        return {"fanova": {}, "mdi": {}, "n_completed": len(completed)}
+
+    fanova = optuna.importance.get_param_importances(
+        study, evaluator=optuna.importance.FanovaImportanceEvaluator(seed=0)
+    )
+    mdi = optuna.importance.get_param_importances(
+        study, evaluator=optuna.importance.MeanDecreaseImpurityImportanceEvaluator(seed=0)
+    )
+    return {"fanova": dict(fanova), "mdi": dict(mdi), "n_completed": len(completed)}
+
+
+def format_importances(result: dict[str, Any], *, sampler: str, pruned: bool) -> str:
+    """Render fANOVA + MDI importances, warning when the estimate is unreliable.
+
+    fANOVA assumes a roughly i.i.d. design over the search space. A TPE sampler
+    concentrates sampling, and pruning leaves only an early-success-biased subset
+    of completed trials, so importances from such a study are biased. A small
+    completed-trial count is also unreliable. Any of these prepends a WARNING.
+    """
+    lines: list[str] = []
+    n = int(result["n_completed"])
+    reasons: list[str] = []
+    if sampler != "random":
+        reasons.append(f"sampler={sampler!r} (non-random designs bias fANOVA)")
+    if pruned:
+        reasons.append("pruning enabled (completed trials are selection-biased)")
+    # fANOVA fits a random forest over completed trials; below ~8 it has too
+    # little data for a stable variance decomposition.
+    if n < 8:
+        reasons.append(f"only {n} completed trials")
+    if reasons:
+        lines.append("WARNING: importances may be unreliable — " + "; ".join(reasons) + ".")
+
+    lines.append(f"Completed trials: {n}")
+    for title, key in (("fANOVA", "fanova"), ("MDI", "mdi")):
+        lines.append("")
+        lines.append(f"{title} importances:")
+        ranked = sorted(result[key].items(), key=lambda kv: kv[1], reverse=True)
+        if not ranked:
+            lines.append("  (too few completed trials to estimate)")
+        for name, importance in ranked:
+            lines.append(f"  {name:<18} {importance:.4f}")
+    return "\n".join(lines)
+
+
+def confirm_top(
+    study: optuna.Study,
+    *,
+    k: int,
+    full_kwargs: dict[str, Any],
+    val_batches: int,
+) -> list[dict[str, Any]]:
+    """Retrain the top-``k`` configs at full budget and score with the eval report.
+
+    Returns one record per config: its hyperparameters plus the authoritative
+    ``rank_ic_mean`` and per-channel skill scores from
+    :func:`ophir.evaluate.evaluate_model`. Requires CUDA.
+    """
+    from ophir import register
+    from ophir.evaluate import evaluate_model
+    from ophir.train import build_dataloader, build_split_handlers, run_training
+
+    base_path = os.path.join(
+        full_kwargs.get("data_dir") or register.get_default_data_days_dir(), "stocks"
+    )
+    results: list[dict[str, Any]] = []
+    for config in select_top_configs(study, k):
+        model = run_training(**full_kwargs, **config, val_identity=True)
+        _, val_handler = build_split_handlers(
+            base_path=base_path,
+            seq_len=full_kwargs["seq_len"],
+            offset=full_kwargs["offset"],
+            min_volume=full_kwargs["min_volume"],
+            train_min_year=full_kwargs["train_min_year"],
+            train_max_year=full_kwargs["train_max_year"],
+            val_min_year=full_kwargs["val_min_year"],
+            val_max_year=full_kwargs["val_max_year"],
+            use_sp500=full_kwargs["use_sp500"],
+            use_quality_allowlist=full_kwargs.get("use_quality_allowlist", False),
+            clean_rows=full_kwargs.get("clean_rows", False),
+            max_abs_r_close=full_kwargs.get("max_abs_r_close", 0.75),
+        )
+        val_dl = build_dataloader(
+            val_handler,
+            full_kwargs["response_size"],
+            full_kwargs["batch_size"],
+            full_kwargs["num_workers"],
+            full_kwargs["cache_size"],
+            return_identity=True,
+        )
+        report = evaluate_model(model, val_dl, val_batches)
+        results.append({"config": config, "report": report})
+    results.sort(
+        key=lambda r: r["report"]["r_close"].get("rank_ic_mean", float("-inf")),
+        reverse=True,
+    )
+    return results

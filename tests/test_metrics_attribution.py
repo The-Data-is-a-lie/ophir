@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from ophir.agent.metrics import counterfactual_books
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _DATES = ["2026-06-01", "2026-06-08", "2026-06-15"]
 

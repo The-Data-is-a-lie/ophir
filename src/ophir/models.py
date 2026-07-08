@@ -12,12 +12,12 @@ notable changes from the original version are:
 
 from __future__ import annotations
 
-import logging
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.attention.flex_attention import (
     BlockMask,
@@ -30,7 +30,7 @@ from torch.nn.attention.flex_attention import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .model_data import OHLCMulitClassPredictorInput
+    from .model_data import OHLCMultiClassPredictorInput
 
     MaskMod = Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
     ScoreMod = Callable[
@@ -40,32 +40,30 @@ if TYPE_CHECKING:
 
 compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
 
-logger = logging.getLogger(__name__)
+#: Number of per-day input features consumed by ``feature_mlp`` (see
+#: ``ticker.extract_features``). Single source of truth: a checkpoint trained
+#: against a different value cannot be loaded by the current model, so
+#: ``register`` validates it at load time.
+FEATURE_DIM = 12
 
 
 # --------------------------------------------------------------------------- #
 # Hyper-parameters
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True, kw_only=True, slots=True)
-class OHLCMulitClassParameters:
+class OHLCMultiClassParameters:
     """
     Hyper-parameters for the OHLC multi-class predictor.
 
     ``emb_dim`` - dimensionality of the token embeddings.
     ``num_layers`` - number of transformer blocks.
     ``num_heads`` - number of attention heads.
-    ``num_features`` - number of input features per token (13 for the daily model).
-    ``use_learned_pe`` - add the fixed-length trainable positional encoding; set
-    ``False`` for long (intraday) sequences, which rely on ALiBi's relative bias.
-    ``max_pe_len`` - length of the trainable positional encoding when enabled.
     """
 
     emb_dim: int
     num_layers: int
     num_heads: int
-    num_features: int = 13
-    use_learned_pe: bool = True
-    max_pe_len: int = 512
+    rezero_init: float = 0.0
 
     def __post_init__(self) -> None:
         assert self.emb_dim % 4 == 0  # emb_dim must be a multiple of 4
@@ -109,7 +107,7 @@ def create_padding_mask(pads: torch.Tensor) -> MaskMod:
 ## --------------------------------------------------------------------------- #
 # ALiBi slopes
 # --------------------------------------------------------------------------- #
-def get_alibi_slopes(hparams: OHLCMulitClassParameters) -> torch.Tensor:
+def get_alibi_slopes(hparams: OHLCMultiClassParameters) -> torch.Tensor:
     """
     Compute the ALiBi slopes for the given number of heads.
 
@@ -211,8 +209,6 @@ class CausalPrefixBlockMasks:
 
         causal_mask = or_masks(prefix, causal)
 
-        logger.debug("creating block mask of size %s with response size %s", seq_len, response_size)
-
         if pad_mask is not None:
             return and_masks(causal_mask, pad_mask)
         else:
@@ -227,7 +223,7 @@ class FlexMHA(nn.Module):
 
     slopes: torch.Tensor
 
-    def __init__(self, hparams: OHLCMulitClassParameters) -> None:
+    def __init__(self, hparams: OHLCMultiClassParameters) -> None:
         super().__init__()
         self.hparams = hparams
 
@@ -328,9 +324,9 @@ class TransformerBlock(nn.Module):
     A single transformer block with residual connections and ReZero scaling.
     """
 
-    def __init__(self, hparams: OHLCMulitClassParameters) -> None:
+    def __init__(self, hparams: OHLCMultiClassParameters) -> None:
         super().__init__()
-        self._rezero = nn.Parameter(torch.tensor(0.0, dtype=torch.float))
+        self._rezero = nn.Parameter(torch.tensor(hparams.rezero_init, dtype=torch.float))
 
         self.mha = FlexMHA(hparams=hparams)
         self.ln1 = nn.LayerNorm(hparams.emb_dim)
@@ -360,63 +356,149 @@ class TransformerBlock(nn.Module):
 
 
 # --------------------------------------------------------------------------- #
+# Output activations
+# --------------------------------------------------------------------------- #
+def apply_output_activations(raw: torch.Tensor) -> torch.Tensor:
+    """Constrain the upside/downside channels to be non-negative.
+
+    ``upside``/``downside`` are log-magnitudes (``log(high/close)`` and
+    ``log(close/low)``), both ``>= 0`` by construction, while ``r_close`` is a
+    signed return. Softplus keeps the magnitude channels in their valid range so
+    the ``.exp()`` reconstruction can never invert the candle.
+    """
+    r_close = raw[..., 0:1]
+    upside = F.softplus(raw[..., 1:2])
+    downside = F.softplus(raw[..., 2:3])
+    return torch.cat([r_close, upside, downside], dim=-1)
+
+
+def pool_prefix_embedding(
+    x: torch.Tensor, response_size: int, trade_occured: torch.Tensor
+) -> torch.Tensor:
+    """Padding-masked mean of the prefix (observed-history) positions per example.
+
+    Pools ``x[:, :-response_size]`` — the positions that carry real features,
+    excluding the masked forecast block — and averages only the positions where a
+    trade occurred, so padded (no-trade) rows do not contaminate the per-stock
+    embedding used for the UI projection. Rows with no valid prefix position fall
+    back to the unmasked prefix mean.
+    """
+    prefix = x[:, :-response_size]
+    valid = trade_occured[:, : prefix.shape[1]].unsqueeze(-1).to(prefix.dtype)
+    count = valid.sum(dim=1)
+    masked_mean = (prefix * valid).sum(dim=1) / count.clamp_min(1.0)
+    fallback = prefix.mean(dim=1)
+    has_valid = count.squeeze(-1) > 0
+    return torch.where(has_valid.unsqueeze(-1), masked_mean, fallback)
+
+
+def rezero_gate_stats(model: nn.Module) -> dict[str, float | list[float]]:
+    """Per-layer and aggregate magnitudes of the ReZero gate scalars.
+
+    Reads every parameter whose name contains ``"rezero"`` (one scalar per
+    :class:`TransformerBlock`) and reports the raw per-layer values plus the mean
+    and max of their absolute values. Used to see whether the residual gates have
+    opened during training. Returns zeros for a model with no such parameters.
+    """
+    per_layer = [float(p.detach()) for name, p in model.named_parameters() if "rezero" in name]
+    if not per_layer:
+        return {"mean_abs": 0.0, "max_abs": 0.0, "per_layer": []}
+    abs_vals = [abs(v) for v in per_layer]
+    return {
+        "mean_abs": sum(abs_vals) / len(abs_vals),
+        "max_abs": max(abs_vals),
+        "per_layer": per_layer,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Main model
 # --------------------------------------------------------------------------- #
-class OHLCMulitClassPredictor(nn.Module):
+class OHLCMultiClassPredictor(nn.Module):
     """
     OHLC multi-class predictor that outputs:
 
-    * ``model_output`` - raw logits for the 3 target classes
-      (r_return, upside, downside) for the *response* tokens.
+    * ``model_output`` - three forward regression targets for the *response*
+      tokens: relative close return (r_close), plus softplus-constrained
+      non-negative log-magnitudes for upside and downside.
     * ``stock_embeddings`` - a single embedding per example obtained by
-      averaging the response embeddings.
+      mean-pooling the prefix (observed-history) embeddings.
     """
 
-    def __init__(self, hparams: OHLCMulitClassParameters) -> None:
+    def __init__(self, hparams: OHLCMultiClassParameters) -> None:
         super().__init__()
-        # Positional encoding - trainable and fixed-length. Disabled for long
-        # (intraday) sequences, which rely on ALiBi's relative bias instead and
-        # would otherwise be capped at ``max_pe_len``.
-        if hparams.use_learned_pe:
-            self.pe = nn.Parameter(torch.randn((1, hparams.max_pe_len, hparams.emb_dim)))
-        else:
-            self.register_parameter("pe", None)
-        self.feature_mlp = nn.Linear(hparams.num_features, hparams.emb_dim)
+        # Positional encoding - we keep it simple and trainable
+        self.pe = nn.Parameter(torch.randn((1, 512, hparams.emb_dim)))
+        self.feature_mlp = nn.Linear(FEATURE_DIM, hparams.emb_dim)
+        # Learned token that replaces the response-block features so the model
+        # cannot read the targets it is asked to forecast (see _apply_response_mask).
+        self.mask_token = nn.Parameter(torch.randn(hparams.emb_dim))
         self.causal_masks = CausalPrefixBlockMasks()
         self.encoder = nn.ModuleList([TransformerBlock(hparams) for _ in range(hparams.num_layers)])
         self.out_ff = nn.Linear(hparams.emb_dim, 3)
 
-    def forward(self, input: OHLCMulitClassPredictorInput) -> OHLCMulitClassPredictorInput:
+    def _apply_response_mask(self, x: torch.Tensor, response_size: int) -> torch.Tensor:
+        """Replace the response-block rows of ``x`` with the learned mask token.
+
+        The last ``response_size`` positions are the days the model must
+        forecast. Every input feature at those positions is contemporaneous
+        with that day's targets (``r_close`` / ``upside`` / ``downside``, plus
+        the rolling features derived from them), so feeding them would leak the
+        answer. They are overwritten with a single learned mask embedding,
+        leaving only positional information for the forecast horizon.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Projected features of shape ``(B, L, emb_dim)``.
+        response_size : int
+            Number of trailing positions to mask.
+
+        Returns
+        -------
+        torch.Tensor
+            ``x`` with its last ``response_size`` rows replaced by the mask
+            token.
+        """
+        batch, seq_len, _ = x.shape
+        prefix_len = seq_len - response_size
+        mask = self.mask_token.expand(batch, response_size, -1)
+        return torch.cat([x[:, :prefix_len], mask], dim=1)
+
+    def forward(self, input: OHLCMultiClassPredictorInput) -> OHLCMultiClassPredictorInput:
         """
         Forward pass of the predictor.
 
         Parameters
         ----------
-        input : OHLCMulitClassPredictorInput
+        input : OHLCMultiClassPredictorInput
             The input dataclass containing:
-            * ``feature_input`` - raw features of shape ``(B, L, 13)``.
+            * ``feature_input`` - raw features of shape ``(B, L, 12)``.
             * ``trade_occured`` - boolean mask of shape ``(B, L)``.
             * ``response_size`` - integer indicating the number of response tokens.
             * ``model_output`` and ``stock_embeddings`` are written in-place.
 
         Returns
         -------
-        OHLCMulitClassPredictorInput
+        OHLCMultiClassPredictorInput
             The same object with ``model_output`` and ``stock_embeddings`` filled.
         """
-        # Feature projection. Zero the response region first so the predicted
-        # days carry no answer: r_close/upside/downside are both input features
-        # and targets, so without this the model can copy them through the
-        # self-attending response tokens instead of forecasting.
-        feature = input.feature_input.clone()
-        feature[:, -input.response_size :, :] = 0.0
+        seq_len = input.feature_input.shape[1]
+        response_size = int(input.response_size)
+        if not 0 < response_size < seq_len:
+            raise ValueError(f"response_size must be in 1..{seq_len - 1}, got {response_size}")
+
+        # Feature projection
+        feature = input.feature_input
         x = cast("torch.Tensor", self.feature_mlp(feature))
 
-        # Add positional encoding (safely slice to the actual length). Skipped
-        # when disabled (long/intraday sequences), where ALiBi carries position.
-        _, seq_len, _ = x.shape
-        if self.pe is not None:
-            x = x + self.pe[:, :seq_len]
+        # Mask the forecast horizon so the response days carry no features that
+        # would leak their own targets.
+        x = self._apply_response_mask(x, response_size)
+
+        # Add positional encoding (safely slice to the actual length)
+        pe_slice = self.pe[:, :seq_len]
+        x = x + pe_slice
 
         # Build padding mask - True where no trade occurred
         padding_mask = ~input.trade_occured
@@ -431,7 +513,9 @@ class OHLCMulitClassPredictor(nn.Module):
             x = encoder_block(x, block_mask)
 
         # Extract the response embeddings and compute outputs
-        response_embeddings = x[:, -input.response_size :]
-        input.model_output = cast("torch.Tensor", self.out_ff(response_embeddings))
-        input.stock_embeddings = response_embeddings.mean(dim=1)
+        response_embeddings = x[:, -response_size:]
+        input.model_output = apply_output_activations(
+            cast("torch.Tensor", self.out_ff(response_embeddings))
+        )
+        input.stock_embeddings = pool_prefix_embedding(x, response_size, input.trade_occured)
         return input

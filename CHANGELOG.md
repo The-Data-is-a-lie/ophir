@@ -7,341 +7,532 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.3] - 2026-06-24
+### Added
+
+- Autoresearch harness (`autoresearch/`): autonomous edit → time-boxed train →
+  `rank_ic_near` eval → keep-or-revert loop with per-trial logging, sealed
+  holdout split, and hash-pinned eval harness.
+- Autoresearch harness hardening (final-review fix wave): AST enforcement of
+  sealed constants in the mutable file (sealed names cannot be rebound; `*_year`
+  call keywords must be a sealed name or `None`); `eval_harness.py` binds all
+  trusted imports before the agent-authored module; per-session
+  `core.hooksPath` isolation on every git call plus content-or-absence pins on
+  `.claude/settings*.json`/`CLAUDE.md`/`AGENTS.md`; cross-session `.in-flight`
+  recovery with a logged `runner-died` row; and a guard aborting the session if
+  its `results.tsv` is git-tracked. The smoke record moved out of the reset
+  blast radius to `autoresearch/records/`.
 
 ### Changed
 
-- The manager LLM is no longer biased toward few names. Its prompt now says to hold
-  **as many or as few names as the evidence justifies** (concentrate in the best ideas
-  or diversify across several), instead of "prefer fewer, higher-conviction names."
-  Position count is the model's call; the per-name and gross caps in the risk gate
-  still bound the book.
+- CI/test hardening from the repo-setup review: `tests/test_cli.py` help-text
+  asserts now compare against `click.unstyle(...)` output, so they hold in any
+  environment where Rich force-styles terminal output (GitHub Actions, `act`,
+  `FORCE_COLOR` shells) — `TERM: dumb` in CI is now belt-and-suspenders, not
+  load-bearing; the `checks` workflow declares explicit least-privilege
+  `permissions: contents: read`.
 
-## [0.11.2] - 2026-06-24
+### Added
+
+- Repo setup guided by the OKF best-practice bundles
+  ([kwcantrell/okf-bundles](https://github.com/kwcantrell/okf-bundles)):
+  GitHub Actions CI (`.github/workflows/ci.yml`, job `checks`) running
+  ruff check / ruff format / mypy / pytest on every PR and push to `main`;
+  branch protection on `main` (required `checks` run, linear history, no
+  force pushes); `AGENTS.md` as the canonical agent guide with `CLAUDE.md`
+  importing it via `@AGENTS.md`; pre-commit expanded with ruff (project-venv
+  hooks) and gitleaks secret scanning; a PR template. Spec:
+  `docs/superpowers/specs/2026-07-07-okf-bundle-repo-setup-design.md`.
+- `.agents/skills/quant-trading/`: a layered knowledge skill compiling
+  quant-trading best practices and 2023–2026 research. A concise `SKILL.md`
+  playbook (checklist + anti-pattern table + ophir callouts) backed by four cited
+  reference docs (`forecasting`, `risk-and-execution`, `data-sources`,
+  `backtesting`). Each claim is tagged `[verified]` (passed an adversarial
+  research check), `[canon]` (established), or `[refuted]` (cautionary). Reference
+  only — complements, does not replace, the operational `alpaca-trader` skill.
+- `ophir evaluate` now reports the near-horizon operating point: a `rank_ic_near`
+  headline (pooled cross-sectional rank-IC over forecast offsets 1..5, the band
+  where the model's skill concentrates) alongside the existing pooled
+  `rank_ic_mean`, plus a "Near-horizon IC decay" table showing rank-IC per
+  forecast offset. The near metric reuses the same math as the training-side
+  `val_rank_ic_near`, so the offline report and the live validation metric agree.
+  Measurement only — no model, training, or trading-path change.
+- `tests/test_patch_targets.py`: a guard that AST-scans the suite for
+  string-literal `mock.patch` / `monkeypatch.setattr` targets pointing into
+  `ophir` and asserts each still resolves. Catches stale patch targets after a
+  symbol moves modules (e.g. a package split) — the one failure class the
+  public-API parity check cannot see — and reports any non-literal targets it
+  cannot statically check rather than skipping them silently.
 
 ### Changed
 
-- Bulk OHLC ingest (`ingest_many`) now fetches in **chunks via one `yf.download`
-  per batch** (default 50) with retry + exponential backoff, instead of one request
-  per ticker -- far fewer Yahoo requests and resilient to rate-limiting when the
-  watchlist is the full S&P 500. Symbols are normalized to Yahoo form (`BRK.B` ->
-  `BRK-B`) and de-duplicated before fetching; per-symbol failures still skip
-  non-fatally, and single-ticker `ingest()` shares the normalization.
-
-## [0.11.1] - 2026-06-22
+- Reorganized `ophir.register` from a single 641-line module into a focused
+  package (`layout`, `symbols`, `trainers`, `checkpoints`, `client`) with a
+  re-export `__init__`. Public API and behavior are unchanged — constants, the
+  Typer `app`, and `from ophir import register` / `register.<name>` resolve as
+  before, and the `.ophir/` directory location is preserved. The `.ophir/`
+  constants now live in `register.layout` as the single source of truth, read
+  live by the other submodules; tests that redirected the layout via
+  `monkeypatch.setattr(register, "DATA_DIR"/"MODEL_DIR", ...)` now target
+  `register.layout` accordingly.
+- Reorganized `ophir.ticker` from a single 999-line module into a focused
+  package (`paths`, `splits`, `features`, `streamer`, `handler`, `inputs`,
+  `datasets`) with a re-export `__init__`. Public API and behavior are
+  unchanged; `from ophir.ticker import ...` continues to work as before. The
+  only test-side change is retargeting two `mocker.patch` paths to the
+  submodule where the patched name now lives (`ophir.ticker.splits.pd`,
+  `ophir.ticker.datasets.get_worker_info`).
 
 ### Fixed
 
-- Trade tracker no longer looks frozen on a mid-session refresh. When the live Alpaca
-  account equity is ahead of the settled daily portfolio-history series (which only
-  posts an end-of-day point after the close), the live mark is now spliced onto the
-  series so the *As of* date and every window's End equity track real time — flagged
-  as a live intraday mark so it is not mistaken for a settled close. The
-  `ophir report-trades` terminal summary uses the same spliced series, so it agrees
-  with the written report.
-
-## [0.11.0] - 2026-06-18
+- Base/finetuned checkpoint resolution (`register._latest_base_ckpt`,
+  `_latest_finetuned_ckpt`, hence `load_base_model_ckpt(time_version=True)`) now
+  selects the most recently *modified* checkpoint instead of the numerically
+  highest `-v<N>`. Lightning's `-v<N>` suffix is a filename-collision counter,
+  not a monotonic run counter, so a partial cleanup of older versions could leave
+  the newest run with a lower `N` (e.g. an old `-v124` kept while a fresh run
+  writes `-v1`), causing `time_version=True` to resolve a stale checkpoint. mtime
+  ties fall back to the highest `-v<N>`, then the sorted-last name, so the result
+  stays deterministic. `_latest_finetuned_ckpt` now raises `FileNotFoundError`
+  (not `IndexError`) when no finetuned checkpoint exists.
+- `ophir.trading.forecast.load_forecasts` now degrades to an empty result (the
+  documented "no signals available" fallback) when the canonical checkpoint
+  fails to load with a `RuntimeError` — e.g. an architecturally stale checkpoint
+  whose `feature_mlp` width predates a feature-schema change. Previously only
+  `IndexError`/`FileNotFoundError`/`OSError` were tolerated, so a stale checkpoint
+  would crash `ophir trade propose` instead of falling back to non-ophir signals.
+- `ophir evaluate` now skips a checkpoint that fails to load with a `RuntimeError`
+  (e.g. an architecturally stale checkpoint whose `feature_mlp` width predates a
+  feature-schema change) instead of aborting the whole run, matching the
+  documented "each loaded independently, so a missing one is skipped" behavior —
+  previously only `FileNotFoundError`/`IndexError`/`OSError` were tolerated, so one
+  stale checkpoint sank the report even when a loadable one was available. The
+  load-and-skip loop is now a unit-tested `_evaluate_loaders` helper.
+- `ophir.evaluate.accumulate_targets` no longer crashes with a CPU/CUDA device
+  mismatch when the validation loader carries identity (`return_identity=True`).
+  The input container's `cuda()` moves only `feature_input`/`targets`/
+  `trade_occured` to the GPU, leaving `stock_id`/`date_ordinal` on the CPU, so
+  indexing them with the CUDA response mask raised
+  `RuntimeError: indices should be either on cpu or on the same device`. The
+  identity/offset selection now runs on the CPU regardless of input device. The
+  bug only surfaced on the real CUDA path (the CPU-only `_FakeModel` test
+  fixtures keep every tensor on one device), so the cross-sectional rank-IC in
+  the standalone `ophir evaluate` report had never actually run.
+- Corrected long-standing spelling errors in core public identifiers:
+  `OHLCMulitClassPredictor`/`OHLCMulitClassPredictorInput`/`OHLCMulitClassParameters`
+  → `OHLCMultiClass*`, `StockHanlder` → `StockHandler`, and `load_fintuned_ckpt`
+  → `load_finetuned_ckpt`. Behavior is unchanged and existing checkpoints still
+  load (state-dict keys and saved hyperparameters are unaffected). The persisted
+  `"ophire-ohlc-finetuned"` checkpoint filename is intentionally left as-is to
+  avoid breaking resolution of already-saved checkpoints.
+- `load_base_model_ckpt(time_version=False)` (and therefore `load_forecasts`)
+  raised `IndexError` and degraded to `{}` whenever multiple non-versioned
+  checkpoints matched its derived prefix. It now resolves an explicit canonical
+  checkpoint (`register.BASE_BEST_CKPT` = `ophir-ohlc-base-best.ckpt`) via a pure,
+  offline-testable `_resolve_base_ckpt_path`, and `_latest_base_ckpt` degrades to
+  `FileNotFoundError` instead of `IndexError`. Best-epoch training candidates now
+  save to a `candidates/` subdir; promotion to canonical is an explicit copy (see
+  `docs/checkpoint-promotion.md`).
+- Loading a checkpoint whose feature width no longer matches the model (e.g. one
+  trained before `time_delta` was dropped) failed with an opaque torch
+  `size mismatch` error. `load_base_model_ckpt` now raises a clear, actionable
+  message naming the found-vs-expected `feature_mlp` input dim and pointing at
+  `docs/checkpoint-promotion.md`. The expected width is a single source of truth
+  (`models.FEATURE_DIM`), validated at load time via the offline-testable
+  `register._feature_dim_mismatch`.
 
 ### Added
 
-- Free alternative-data input signals, each a fail-safe, point-in-time (`as_of`-gated)
-  `*_signal()` module surfaced as a low-weight advisory dimension on `ResearchBrief`
-  (`advisory_signals()`, fed to the debate + manager prompts):
-  - `agent.short_interest` — FINRA biweekly consolidated short interest (days-to-cover, change).
-  - `agent.edgar` — SEC EDGAR Form 4 corporate-insider trades + 8-K / 13D-G events (`filingDate`-gated).
-  - `agent.congress` — US House PTR disclosures: cluster buys + signed dollar flow (disclosure-gated).
-  - `agent.options_flow` — CBOE per-name put/call ratio, 25-delta IV skew, `iv30` (live-only snapshot).
-  - `agent.macro` — VIX term-structure regime, plus FRED HY credit spread / NFCI / 2s10s and a
-    deterministic days-to-OPEX gate (`ophir register fred-key`).
-  - `agent.events` — Yahoo earnings-calendar event gate (days to next earnings).
-  - `agent.sentiment` — FinBERT-scored sentiment over the brief's existing headlines (no new fetch).
-  - `agent.attention` — Wikipedia pageviews + ApeWisdom Reddit mentions.
-- Derived technicals with no new fetch: 12-1 momentum, relative strength vs SPY, ATR%, and Amihud
-  illiquidity / dollar volume; plus a FINRA short-exempt ratio from the already-parsed Reg SHO file.
-- The existing `dark_pool_signal` is now wired into `ResearchBrief` (`flow` dimension).
-- Trade tracker: `ophir report-trades` writes a `trade-tracker/` folder (`README.md` + `trades.csv`)
-  from the live Alpaca paper account — every filled trade with its date, and day / week / month /
-  YTD / 1-year account P&L from portfolio history. It auto-refreshes after each
-  `ophir trade --broker alpaca` run and mirrors a copy into the project root.
-- `AlpacaPaperBroker.filled_orders` / `equity_series`; the `ophir register fred-key` command.
-- Per-source `gather-*` skills (insider, options, sentiment, attention, congress, short-interest,
-  macro, events), `docs/data-inputs.md` catalog rows, and `report-trades` / `register fred-key` CLI docs.
+- Deterministic momentum signal producer (`ophir.trading.momentum`): an
+  information-ratio momentum metric over recent price bars (`momentum_score`),
+  cross-sectional scoring (`momentum_signals`), and a `load_recent_closes` data
+  seam reusing the model's parquet read path. Wired into `ophir trade propose`
+  (new `--base-path` / `--momentum-lookback` / `--momentum-skip` options),
+  replacing the neutral momentum stub. Sentiment remains the skill's judgment.
+  Also extracts `signals.cross_sectional_normalize`, now shared by the ophir and
+  momentum scorers.
+- `ophir trade propose`: orchestration command wiring the ophir forecast seam
+  into the trading signal flow. Loads per-symbol offset-1 forecasts, scores them
+  cross-sectionally (`signals.ophir_signals` — demean/scale/clamp on `r_close`),
+  blends with neutral momentum/sentiment, sizes by `--base-notional`, and emits
+  `ProposedOrder` JSON for the existing `gate` command. Degrades to an empty
+  array when forecasts are unavailable; does not call the gate or write the
+  ledger.
+- ReZero depth diagnostic: opt-in `rezero_init`, `--decouple-rezero-schedule`,
+  and `--log-rezero-gates` training knobs (all default to current behavior),
+  a `rezero_gate_stats` helper, and `dashboard.summarize_rezero_runs` to compare
+  experiment arms. See `docs/rezero-diagnostic-runbook.md`.
+- Add `ophir sweep`: an Optuna hyperparameter sweep harness that searches
+  optimizer, loss-weight, and architecture-tier hyperparameters by mean
+  cross-sectional rank-IC on `r_close`, with proxy-budget search (ASHA pruning,
+  resumable SQLite study) and a full-budget confirm phase. Exposes the
+  previously-buried `rezero_lr`, `betas`, and loss-weight knobs on `ophir train`
+  and adds an opt-in `val_rank_ic` validation metric.
+- `alpaca-trader` Claude Code skill (`.claude/skills/alpaca-trader/`) and
+  `ophir.trading` deterministic core. The skill provides morning/evening
+  workflow automation (proposal → safety gate → paper order → outcome scoring)
+  driven by Alpaca MCP. The trading core covers: typed domain models
+  (`types.py`), config loading (`config.py`), a position-sizing and
+  order-validity safety gate (`safety.py`), an append-only JSON-Lines ledger
+  (`ledger.py`), portfolio performance metrics (`metrics.py`), multi-factor
+  signal blending with graceful ophir-absent fallback (`signals.py`),
+  per-entity section-upsert memory (`memory.py`), exposure aggregation
+  (`exposure.py`), end-of-day outcome scoring (`outcomes.py`), an ophir
+  forecast adapter (`forecast.py`), and a `trade` CLI subcommand group
+  (`cli.py`). The memories knowledge-base tree (`memories/tickers/`,
+  `memories/sectors/`, `memories/ledger/`) is seeded at repo root. Unit tests
+  cover all trading-core modules (full suite: 231 passing).
+- Cross-sectional rank-IC in the validation report (`ophir.evaluate`):
+  `accumulate_targets` now also collects per-`r_close`-prediction `(stock_id,
+  date)` identity (when the loader carries it), exposed as `r_close_ids` /
+  `r_close_dates` on `AccumulatedEval`. New pure helper
+  `dedupe_by_ticker_date(pred, target, ids, dates)` keeps the first prediction
+  per `(ticker, date)` (stable order) and returns the per-row date strings for
+  `rank_ic`. `evaluate_model` reports `rank_ic_mean` / `rank_ic_ir` for
+  `r_close`, and the `evaluate` command builds its loader with
+  `return_identity=True`. Covered by new tests in `tests/test_evaluate.py`.
+- Opt-in eval identity plumbing: `OHLCMulitClassPredictorInput` gains optional
+  `stock_id` / `date_ordinal` tensor fields (default `None`, mirroring `time`);
+  `extract_model_data(..., stock_id=...)` emits a 0-dim `long` `stock_id` and an
+  int64 `(seq_len,)` `date_ordinal` from the window index; `StockStreamer` gains
+  a `symbol` field; `StockHandlerDataset(..., return_identity=False)` and
+  `build_dataloader(..., return_identity=False)` thread the flag through. All
+  opt-in and off by default, so the training collate and path are byte-for-byte
+  unchanged. Covered by new tests in `tests/test_model_data.py`,
+  `tests/test_ticker_features.py`, and `tests/test_ticker_datasets.py`.
+- `prefix_last_observed` + `AccumulatedEval` (`ophir.evaluate`): the validation
+  report now scores `upside`/`downside` against a persistence baseline. The new
+  pure helper `prefix_last_observed(values, trade_occured, response_size)`
+  returns each row's value at its last traded prefix position (falling back to
+  prefix position 0); `accumulate_targets` carries that value flat across the
+  horizon as a baseline and now returns an `AccumulatedEval` (masked
+  `channels` + per-channel `baselines`) instead of a bare dict. `evaluate_model`
+  reports `skill_vs_persistence` for the two magnitude channels. Covered by new
+  unit tests in `tests/test_evaluate.py`.
+- `skill_score_vs_baseline` (`ophir.evaluate`): pure, CPU-safe RMSE skill
+  score against an arbitrary baseline tensor —
+  `1 - rmse(pred, target) / rmse(baseline, target)`. Returns `nan` for empty
+  input or a zero-RMSE baseline. Lets the non-negative `upside`/`downside`
+  channels be scored against a persistence/EWMA forecast rather than having no
+  reference point. Covered by two new unit tests in `tests/test_evaluate.py`.
+- `rank_ic` / `_spearman` (`ophir.evaluate`): pure, CPU-safe daily
+  cross-sectional rank-IC metric. `rank_ic(pred, target, dates)` groups
+  predictions and targets by day label, computes the Spearman rank correlation
+  within each cross-section, and returns `{"ic_mean", "ic_std", "ic_ir",
+  "n_days"}`. Covered by two new unit tests in `tests/test_evaluate.py`.
+
+- `pool_prefix_embedding` (module-level, `ophir.models`): mean-pools the
+  prefix (observed-history) positions `x[:, :-response_size]` into one vector
+  per example for the UI PCA projection, replacing the previous pool over the
+  masked forecast block. Signal-bearing prefix positions now drive the per-stock
+  embedding; zero impact on forecast loss.
+- `apply_output_activations` (module-level, `ophir.models`): passes `r_close`
+  through unchanged and applies `softplus` to the `upside` and `downside`
+  channels so the two log-magnitude heads are guaranteed non-negative. Negative
+  values would invert the reconstructed candle (`high < close` or `low > close`)
+  via the `.exp()` call in `model_data.py`. Wired into `OHLCMulitClassPredictor.forward`
+  immediately after `out_ff`. Existing checkpoints remain loadable but will need
+  a retrain to benefit from the constrained output distribution.
+- `extract_features` now emits a `feature_valid` boolean column: `False` for
+  the first 59 warm-up rows (where the 60-day rolling features are undefined)
+  and for calendar-padding rows, `True` otherwise. `StockStreamer` uses this
+  flag to skip warm-up rows when computing window start positions so no
+  zero-filled warm-up features enter any training window.
+- `robust_scale` helper (`ophir.training_models`): computes a Gaussian-equivalent
+  scale from the median absolute deviation (`1.4826 * MAD`), floored at `1e-4`.
+  Each channel's smooth-L1 `beta` in `compute_loss` is now derived from the
+  MAD of its masked target so Huber's transition sits at the actual noise scale
+  rather than a hardcoded constant.
+- `--sampler {tpe,random}` and `--no-prune` options on `ophir sweep`: choose
+  between TPE (default) and random search, and optionally disable ASHA pruning.
+- `ophir importances <study>`: reports fANOVA and MDI hyperparameter
+  importances for a completed sweep study, with a reliability warning for
+  biased (TPE/ASHA) designs. Requires `scikit-learn` (added as a dependency
+  for the Optuna importance evaluators).
+- `ophir.ceiling`: offline helpers for the forecasting-ceiling investigation —
+  run IC-trajectory summary (peak / best-checkpoint / final `val_rank_ic`),
+  multi-seed aggregation + minimum-detectable-effect, and naive cross-sectional
+  baselines reusing the production rank-IC math.
+- E3 forecast-horizon diagnostic: `ophir.ceiling.signal_decay_curve` /
+  `pooled_baseline_ceiling` (reversal IC vs forecast lead + matched-horizon
+  ceiling), `ophir.evaluate.rank_ic_by_offset` (per-horizon IC decomposition), and
+  a gated `ophir train --log-offset-ic` flag that logs `val_rank_ic_h{N}`.
+- Forecast-ceiling confirmation harness in `ophir.ceiling`:
+  `per_offset_shuffle_null` (per-offset within-day permutation null),
+  `run_offset_ic` (multi-snapshot `val_rank_ic_h*` aggregation), and
+  `confirm_offset_skill` + `scripts/confirm_offset_skill.py` (multi-seed
+  per-offset verdict table). Promote `_trading_day_offsets` to public
+  `trading_day_offsets`.
+- `val_rank_ic_near`: logged each validation pass alongside the pooled
+  `val_rank_ic`; drives best-checkpoint selection when identity tensors are
+  present, giving a short-horizon (leads 1–5) operating-point metric that is
+  not diluted by the full 90-day horizon mix.
+- `near_band_reversal_ceiling` (`ophir.ceiling`): clean near-band naive-reversal
+  ceiling — mean per-lead reversal IC over leads 1–``k`` (default 5) via
+  :func:`signal_decay_curve`. Rigorous comparand for a near-band model
+  operating point; avoids the mixed-offset pooled-lag=1 artifact (~0.119) that
+  does not isolate a 1-trading-day reversal.
+- `ophir.trading.forecast.load_forecasts` now returns per-symbol offset-1
+  forecasts (raw log-space `r_close`/`upside`/`downside`) from the IC-best
+  checkpoint when CUDA and data are available; still degrades to `{}` otherwise.
+- `ophir.ticker.build_latest_inputs` builds the most-recent `response_size=1`
+  inference window per symbol.
 
 ### Changed
 
-- New input modules add a `pypdf` dependency (House PTR PDF parsing); the FinBERT sentiment signal
-  uses `transformers` (already present).
-
-## [0.10.3] - 2026-06-17
-
-### Added
-
-- Free dark-pool / off-exchange activity signal: `ophir.agent.darkpool.dark_pool_signal` reads
-  FINRA's free, no-auth daily short-sale-volume file (`cdn.finra.org/.../CNMSshvol{date}.txt`,
-  whose `TotalVolume` is off-exchange TRF/ADF/ORF volume) and returns a ticker's off-exchange
-  volume, dark participation % (vs consolidated volume), off-exchange short ratio, and an anomaly
-  z-score — a free approximation of Unusual Whales' dark-pool feed (daily aggregate, not
-  per-print). Files are cached per session under `<DATA_DIR>/finra/regsho/`; everything fails safe.
-- `market_calendar.recent_sessions(end, count)` — enumerate the last N closed NYSE sessions.
-- A `gather-dark-pool` skill plus catalog entries in `docs/data-inputs.md` and the `data-inputs`
-  index skill.
-
-## [0.10.2] - 2026-06-17
-
-### Added
-
-- `docs/data-inputs.md`: a catalog of every data input the agent consumes — provider/endpoint,
-  the fetch function (file:line), fields, persistence/caching, and fail-safe — mapping each to the
-  `gather-*` skill that covers it (and flagging MASSIVE as dormant dead code).
-- Claude Code skills under `.claude/skills/`: a `data-inputs` index plus per-source `gather-*`
-  skills (`gather-ohlc`, `gather-fundamentals`, `gather-news`, `gather-technicals`, `gather-splits`,
-  `gather-sp500-universe`, `gather-market-calendar`, `gather-account`) documenting how to fetch /
-  refresh / debug / extend each source by reusing the existing functions.
-
-## [0.10.1] - 2026-06-17
+- Best-checkpoint filename now embeds the monitored metric
+  (`val_rank_ic_near` when selecting on near-IC, else `val_loss`) instead of
+  always labelling it `val_loss`.
+- Normalized the three multi-target loss weights (`r_close`, `upside`,
+  `downside`) by their sum so the weights control task balance only and no
+  longer co-vary with total loss scale. Added a tunable `close_weight`
+  (default `1.0`) to complement the existing `upside_weight` and
+  `downside_weight`. Note: existing default configs see a halved loss magnitude
+  (effective LR rescale); prior checkpoints and learning-rate settings are not
+  directly comparable.
+- `pool_prefix_embedding` now masks padding positions (non-traded days) out of
+  the prefix mean-pool, so the UI PCA embedding is driven by genuine price
+  history rather than zero-filled padding rows.
+- `OHLCMulitClassPredictor.forward` now clamps `response_size` to
+  `[1, seq_len - 1]` before use, guarding against out-of-range values that
+  would produce empty prefix slices or index errors.
 
 ### Fixed
 
-- Hardened bull/bear thesis JSON parsing. A `Thesis` field validator coerces a
-  `key_points` / `key_risks` value that the model returns as a single bulleted string
-  into a clean list and drops a leaked `key_risks':[...]` fragment, and
-  `_extract_json_object` is now string-aware so a `}` inside a value (e.g. in a summary)
-  no longer truncates the object early.
+- Removed the broken `use_cache` property/setter from `LightningOHLCPredictor`;
+  calling it raised `AttributeError` because the underlying predictor has no
+  `ohlc_percentage_change` or `volume_percentage_change` attributes.
+- `pca_projection()` was applying a redundant `.mean(1)` on stock embeddings
+  already pooled by the model, collapsing the embedding dimension to a scalar
+  and making the UI PCA projection degenerate. Removed the double-mean.
 
-## [0.10.0] - 2026-06-17
+## [0.7.0] - 2026-06-18
 
-### Added
+### Removed
 
-- `ophir.agent.market_calendar` (`last_closed_session`, `is_trading_day`) backed by the
-  NYSE calendar (new `pandas-market-calendars` dependency). The live run forecasts off the
-  last *closed* session and the `ophir trade` / `ophir manage` cycle no-ops on non-trading
-  days (weekends, holidays) instead of trading on stale data.
-- Per-stock dossiers: `ophir.agent.report.write_reports` writes one `<SYMBOL>.md` per
-  considered ticker — model forecast, quant/Ollama decisions, research stance, the bull and
-  bear theses, and the manager's accept/reject decision with risk-gate notes — plus an
-  `INDEX.md` roll-up, under `AGENT_REPORT_DIR` (new `report_dir` setting, default
-  `<DATA_DIR>/reports`). Both `ophir trade` and `ophir manage` emit them.
+- Drop the `time_delta` input feature; the model feature set is now **12**
+  columns (was 13) and `feature_mlp` is `nn.Linear(12, ...)`. Existing base
+  checkpoints are architecturally incompatible and **must be retrained**.
+  `time_delta` was near-binary (effectively `{0, log 3}`), overloaded `0`
+  across consecutive / first / padding rows, largely redundant with the
+  positional + ALiBi encoding on the padded daily calendar, and carried a
+  latent `log(0) -> -inf` hazard.
 
 ### Fixed
 
-- Forecast differentiation: the forecast (and backtest) response block is now marked
-  `trade_occured=True` so its tokens attend to the ticker's history; the padding mask had
-  blanked them out, collapsing every ticker to an identical constant.
-- The manager no longer fails safe to all-cash on a large book: every Ollama call sets
-  `num_ctx=ollama_num_ctx` (16384) so the aggregated dossier prompt no longer fills the
-  context window before any JSON is emitted.
-- Execution: full-position exits liquidate by quantity (`close_position`) rather than a
-  notional that rounds to more shares than held; order notionals are quantized to cents
-  (Alpaca rejects more than two decimal places); and `place_orders` logs and continues past
-  a single rejected order instead of aborting the whole rebalance.
+- `extract_features` now rejects a duplicate-date index up front with a clear
+  `ValueError` instead of failing deep in the calendar reindex with an opaque
+  pandas error.
+
+## [0.6.5] - 2026-06-18
+
+### Fixed
+
+- `ophir migrate-sqlite` crashed with `table "t_CPV" already exists` on real
+  data because `sanitize_table_name` deduped table names case-sensitively while
+  SQLite identifiers are case-insensitive; tickers differing only in case (e.g.
+  `CPV` / `CpV`) produced distinct Python strings that collided as the same
+  SQLite table. Deduplication now compares names case-insensitively. Verified
+  end-to-end over all 34,700 tickers.
+
+## [0.6.4] - 2026-06-18
+
+### Added
+
+- `cache_frames` option on `StockHanlder`: memoizes each symbol's loaded daily
+  frame so streaming epochs skip re-reading and re-aggregating the
+  parquet/SQLite source on every pass. Output-identical (split-adjustment and
+  feature extraction return new frames, so the cached frame is only ever read).
+  `build_split_handlers` enables it for training.
 
 ### Changed
 
-- The live forecast conditions on the last completed NYSE session — today's still-forming
-  bar is dropped — via the new `feed.load_history`, which also refuses a stale feed;
-  `predict` and `research` both route through it.
+- Raise `StockHandlerDataset`'s default `cache_size` from `1` to `8` (the
+  training default), so direct instantiation mixes windows across stocks
+  instead of draining one stock fully into strongly autocorrelated batches.
 
-## [0.9.1] - 2026-06-17
+## [0.6.3] - 2026-06-18
 
 ### Fixed
 
-- Base training no longer dies on a NaN-poison batch: `training_step` /
-  `validation_step` skip any batch whose loss is non-finite (a single bad bar — e.g.
-  a `low` of `0.00`, making `downside = log(close/low) = +inf` — used to propagate to
-  NaN weights and corrupt the entire run). `_masked_mean` also guards the empty-mask
-  case defensively.
-
-### Added
-
-- `ophir.training_callbacks.GradNormMonitor` logs the pre-clip gradient norm each
-  step, wired in through a new optional `extra_callbacks` parameter on
-  `register.fetch_base_trainer`.
+- `get_starts` and `get_start_dates` dropped the final full window of every
+  stock (a half-open `arange` stopped at `len(df) - seq_len`, exactly the last
+  valid start). The freshest window — the one most wanted at inference — was
+  silently lost each epoch. Stops are now inclusive (`len(df) - seq_len + 1`).
+- numpy's global RNG was duplicated across DataLoader workers: the pipeline
+  shuffles windows and samples the streamer cache via numpy, but `DataLoader`
+  reseeds only `torch`/`random` per worker, and `ophir train` defaults
+  `seed=None` (so Lightning's worker seeding never engaged). Forked workers drew
+  correlated samples. `build_dataloader` now installs a `_seed_worker`
+  `worker_init_fn` that seeds numpy and `random` from `torch.initial_seed`.
 
 ### Changed
 
-- `fetch_base_trainer` now also saves a stable `*-last.ckpt` (the most-trained
-  weights); near-random out-of-sample validation loss makes best-val checkpoint
-  selection unreliable for this model.
-- Training `DataLoader`s run in-process on Windows (the streaming dataset holds an
-  un-picklable generator) and keep their parallel workers on Linux.
+- Version-proof the feature dtype filter in `extract_model_data` (`np.bool` →
+  `np.dtype(bool)`) and build `StockStreamer`'s window iterator only after its
+  `starts`/`offset` are computed, removing a latent ordering dependency.
 
-## [0.9.0] - 2026-06-15
-
-### Added
-
-- Backtest & validation for the quant signal: `ophir.agent.backtest` and the
-  `ophir backtest` CLI command. `compute_metrics` reports total / annualized
-  return, Sharpe, Sortino, max drawdown, Calmar, and hit rate. `walk_forward` is
-  an event-driven, **no-look-ahead** backtest — it forecasts as-of each rebalance
-  date, builds a BUY book through the same `apply_risk_gate` used live, marks it to
-  the next bar minus per-turnover basis-point costs, and benchmarks against SPY
-  buy-and-hold. `purged_kfold` (purge + embargo for overlapping forecast-horizon
-  labels) and `signal_cv` report the per-fold Spearman information coefficient
-  (constant/degenerate predictions are skipped safely). The LLM layers are not
-  backtested; they are validated by paper track record.
-
-## [0.8.0] - 2026-06-15
-
-### Added
-
-- Paper-execution layer `ophir.agent.execute` and the `ophir trade` CLI command.
-  A `Broker` protocol with an in-process simulated `PaperBroker` (deterministic,
-  no network) and an `AlpacaPaperBroker` adapter (real Alpaca **paper** account,
-  dynamically imported, constructed only with credentials). `reconcile` deltas the
-  target portfolio against the broker's positions into orders (target =
-  `weight * equity`, **sells before buys**, `Decimal` money, a no-trade band, and a
-  deterministic `client_order_id` for idempotency); `place_orders` **defaults to a
-  dry run** (logs the plan, submits nothing) and only submits with an explicit
-  opt-in; `daily_report` is a reporting-only LLM summary that fails safe to a
-  template. `ophir trade <SYMBOLS> [--top-k] [--broker paper|alpaca]
-  [--execute/--dry-run]` chains predict → decide → research → debate → manage →
-  reconcile → place_orders, feeding the broker account's drawdown / daily loss into
-  the risk-gate kill-switch.
+## [0.6.2] - 2026-06-18
 
 ### Changed
 
-- Add the `alpaca-py` dependency (paper-trading broker adapter) and refresh
-  `uv.lock`.
+- Switch mixed-precision training and inference from `16-mixed` (fp16) to
+  `bf16-mixed` across `fetch_base_trainer`, `fetch_finetune_trainer`, and
+  `predict_trainer`. bf16's wider dynamic range suits the ALiBi bias, ReZero
+  scaling, and `exp` candle reconstruction better than fp16, and removes the
+  fp16 gradient scaler. `run_training` now also sets
+  `torch.set_float32_matmul_precision("high")` to enable TF32 for the residual
+  fp32 matmuls.
 
-## [0.7.0] - 2026-06-15
-
-### Added
-
-- Manager + deterministic risk gate `ophir.agent.manage` and the `ophir manage`
-  CLI command — the final portfolio decision. A manager LLM ingests each
-  candidate's full ensemble (forecast + quant/Ollama decisions + research brief +
-  bull/bear debate) and returns ranked picks each with a conviction and rationale
-  (never raw weights); deterministic code sizes the convictions by
-  inverse-volatility scaled toward `annual_vol_target`; and a risk gate enforces
-  the per-name cap and gross-exposure limit, drops unknown/stale/non-finite picks,
-  and halts to all-cash on a drawdown / daily-loss kill-switch. The manager fails
-  safe to an all-cash portfolio when Ollama is unreachable. `ophir manage` chains
-  predict → decide → research → debate → manage and prints the gated target
-  portfolio. Reuses the existing `AgentSettings` risk knobs.
-
-## [0.6.0] - 2026-06-15
-
-### Added
-
-- Bull/bear debate layer `ophir.agent.debate` and the `ophir debate` CLI command:
-  for each top-ranked ticker's research brief, the local `gpt-oss:20b` model
-  argues an independent bullish and a bearish thesis (summary, key points, key
-  risks, stance strength) using only the brief's grounded data, validated and
-  fail-safe to a neutral thesis when Ollama is unreachable. Weighing the two
-  sides is a later phase.
-
-## [0.5.1] - 2026-06-15
-
-### Fixed
-
-- The decision and research LLM tracks now call Ollama with JSON-constrained
-  decoding (`format="json"`), so `ophir decide` and `ophir research` reliably
-  receive valid JSON instead of occasionally emitting unparseable output that
-  forced the fail-safe (a HOLD decision or a neutral brief).
-
-## [0.5.0] - 2026-06-15
-
-### Added
-
-- Research layer `ophir.agent.research` and the `ophir research` CLI command:
-  for each top-ranked ticker, gather grounded fundamentals (Yahoo Finance
-  `.info`), recent news (Yahoo Finance `.news`), and technicals (ophir features
-  plus the model forecast), then have the local `gpt-oss:20b` model summarize
-  *only that data* into a cited `ResearchBrief` (validated; fail-safe to a
-  neutral brief with the grounded data intact when Ollama is unreachable). Adds
-  a `research_news_limit` setting to `AgentSettings`.
-
-### Fixed
-
-- The CLI now reconfigures stdout / stderr to UTF-8 at startup, so
-  `ophir research` and `ophir decide` no longer crash with `UnicodeEncodeError`
-  when printing LLM-generated Unicode (curly quotes, non-breaking hyphens) on a
-  Windows cp1252 console.
-
-## [0.4.0] - 2026-06-14
-
-### Added
-
-- Trading-agent decision layer `ophir.agent.decide` and the `ophir decide` CLI
-  command: turn each model `Forecast` into a buy/sell/hold `Decision` via two
-  tracks — a deterministic quant rule (`buy_threshold` / `sell_threshold` with an
-  optional downside penalty) and a local `gpt-oss:20b` Ollama verdict (grounded
-  in the forecast numbers, validated against a JSON schema, fail-safe to `HOLD`)
-  — compared side by side with an agreement flag. Every decision is written to
-  the audit trail.
-- `AgentSettings` gains the decision thresholds plus `ollama_model` and
-  `ollama_base_url` (env `AGENT_OLLAMA_BASE_URL`); `ophir decide` prints a
-  preflight warning when the Ollama track is selected but the server is
-  unreachable. Adds a "Setting up Ollama" installation runbook and API / CLI /
-  README documentation.
-
-## [0.3.2] - 2026-06-14
-
-### Fixed
-
-- `_latest_base_ckpt` / `_latest_finetuned_ckpt` crashed with `IndexError` when
-  two or more matching checkpoints lacked a `-v<N>` suffix (the best-epoch
-  checkpoints, named `…basebest-epoch=NN-val_loss=X`). They now share a robust
-  `_latest_ckpt` helper that orders `-v<N>` versions, falls back to the most
-  recently modified file otherwise, and raises `FileNotFoundError` when nothing
-  matches — restoring `ophir predict`, `ophir rank`, and `ophir decide`.
-
-## [0.3.1] - 2026-06-10
-
-### Fixed
-
-- `OHLCMulitClassPredictor.forward` now zeros the response-region rows of
-  `feature_input` before the feature MLP. `r_close` / `upside` / `downside` are
-  both input features and targets, so the self-attending response tokens could
-  copy the answer instead of forecasting; at inference (future rows zeroed) the
-  model collapsed to an identical-per-ticker constant. The change is
-  shape-preserving (existing checkpoints still load); the model must be retrained
-  to benefit.
-
-## [0.3.0] - 2026-06-10
-
-### Added
-
-- Trading-agent prediction layer under `ophir.agent`: `config` (pydantic-settings
-  with paper / dry-run / allow-live defaults and a live-mode guard), `audit`
-  (structlog append-only JSON audit trail), and `predict` (a `Forecast` dataclass
-  with `predict_ticker` / `predict_many` / `rank`). `ophir.agent.feed` gains
-  `forecast_window_tensors`, which builds a forward-looking window (real history
-  plus zeroed future rows) for genuine forecasts.
-- CLI commands `ophir predict <SYMBOL>`, `ophir rank <SYMBOLS> [--top-k]`, and
-  `ophir train` (full-US-market trainer, `<2024` train / `>=2024` validation
-  split, fine-tune or from-scratch via `--finetune-from` / `--max-steps`).
-  `register.fetch_base_trainer` gains a `max_steps` argument.
+## [0.6.1] - 2026-06-18
 
 ### Changed
 
-- Add `pydantic-settings` and `structlog` dependencies. Source `torch` from the
-  PyTorch CUDA 13.0 index and pin `torch<2.11` (flex-attention compilation
-  regresses on 2.11+); refresh `uv.lock` accordingly.
+- Refresh `uv.lock` to the revision 3 lockfile format (adds `upload-time`
+  metadata); no dependency changes.
 
-## [0.2.1] - 2026-06-04
-
-### Added
-
-- `trading-best-practices` Claude Code skill
-  (`.claude/skills/trading-best-practices/SKILL.md`) capturing trading-system
-  best practices (paper-first defaults, a pre-trade risk gate + drawdown
-  kill-switch, look-ahead/survivorship-bias-free backtests, and LLM-in-the-loop
-  safety) to guide future trading-agent work. Repo tooling; no runtime impact on
-  the `ophir` package.
-
-## [0.2.0] - 2026-06-04
+## [0.6.0] - 2026-06-18
 
 ### Added
 
-- `ophir ingest <SYMBOL> [--days N]` command and the `ophir.agent` ingestion
-  modules: fetch a ticker's daily OHLC from Yahoo Finance and persist it
-  model-ready in the existing parquet layout, reusing
-  `ophir.ticker.extract_features` / `extract_model_data`.
-  `ophir.agent.feed.latest_window_tensors` bridges the most recent window
-  to the model's `(S, 13)` / `(S, 3)` input tensors. Yahoo data is fetched
-  split/dividend-adjusted (`auto_adjust=True`); ophir's split back-adjustment
-  is skipped on this path to avoid double-adjustment. No GPU required.
+- `loss_decay` hyperparameter on `LightningOHLCPredictor` and the matching
+  `--loss-decay` flag on `ophir train` (default `0.6`; `1.0` disables the
+  decay). It is saved to and restored from checkpoints, so `ophir finetune`
+  inherits the value automatically.
+
+### Changed
+
+- The forecast loss now weights each predicted day geometrically across the
+  response block, punishing nearer-term errors more than further-out ones.
+  Reductions use a normalized weighted masked mean, keeping the loss scale
+  comparable to the previous uniform loss. By default training is no longer
+  uniform over the horizon; pass `--loss-decay 1.0` to recover the old
+  behavior.
+
+## [0.5.0] - 2026-06-18
+
+### Added
+
+- `ophir curate` (`ophir.curation`): scan the per-stock parquet tree and write a
+  high-quality **symbol allowlist** (`<DATA_DIR>/quality-symbols.txt`) plus a
+  per-symbol metrics file (`<DATA_DIR>/quality-stats.json`). Each symbol is
+  scored on four dimensions — liquidity (median dollar-volume), history length &
+  continuity (cleaned trading days and a business-day-denominated gap fraction),
+  price sanity (penny-stock floor and split-error return spikes), and
+  staleness/flatlines (identical-close runs and zero-volume days) — with
+  per-criterion thresholds exposed as CLI options. `ophir train` /
+  `ophir finetune` gained `--use-quality-allowlist` to restrict training to the
+  allowlist via `StockHanlder.keep_stocks` (intersecting with `--use-sp500`).
+- `clean_daily_ohlcv` (`ophir.ticker`): a deterministic, lookahead-free
+  row-level cleaner that drops zero-volume and return-spike days from a daily
+  OHLCV frame. It runs during curation (so metrics match training-time data) and
+  at load time via the new `StockHanlder.clean_rows` field, exposed on
+  `ophir train` / `ophir finetune` as `--clean-rows` / `--max-abs-r-close`.
+
+## [0.4.1] - 2026-06-18
+
+### Fixed
+
+- `ophir serve` no longer crashes at startup when building the embedding
+  scatter plot. `build_embedding_figure` ran every S&P 500 ticker through the
+  model before checking its history length, so a ticker with fewer days than
+  the 90-day response horizon (e.g. FISV at 51) produced a negative prefix
+  slice in the response-block masking and raised a tensor-size mismatch. The
+  insufficient-history guard now runs before inference, so short-history
+  tickers are skipped and the dashboard launches.
+
+## [0.4.0] - 2026-06-18
+
+### Added
+
+- `ophir evaluate` (`ophir.evaluate`): score a checkpoint on the held-out
+  validation set and print a per-target accuracy report — MAE, RMSE, bias, plus
+  directional accuracy and a zero-baseline skill score for `r_close`. It rebuilds
+  the same by-date validation split as `train`, restricts predictions/targets to
+  the response block and trading days (the same mask as the training loss), and
+  by default reports both base checkpoints (best-`val_loss` and time-interval)
+  side by side; `--finetuned` evaluates the finetuned checkpoint instead. The
+  metric core is pure/CPU-safe and covered by `tests/test_evaluate.py`; a new
+  "Evaluation" tab in `ophir dashboard` exposes the same report on demand.
+
+### Changed
+
+- The `ophir dashboard` loss plot now defaults to the per-pass aggregate
+  (`*_epoch`) series with an epoch/step granularity toggle. The per-step
+  validation series re-evaluates the same fixed, `limit_val_batches`-long batch
+  order every pass, so plotting it produced a misleading sawtooth; the epoch
+  series is the one that reflects learning.
+
+## [0.3.0] - 2026-06-18
+
+### Added
+
+- In-repo training entrypoints `ophir train` (base pre-training) and
+  `ophir finetune` (`ophir.train`), wiring the streaming datasets to
+  `LightningOHLCPredictor` and the trainer factories — previously the only way
+  to train was an unversioned off-repo driver. The train/validation split is
+  **by date** with an embargo gap (`build_split_handlers`): disjoint year ranges
+  separated by at least `ceil(seq_len / 365)` skipped years so no window
+  straddles the boundary. Parameter guards reject invalid model dimensions up
+  front (including `emb_dim // num_heads < 16`, which PyTorch flex-attention
+  cannot compile on CUDA). The step budget is sized to the data by default —
+  `ophir train --epochs N` derives `max_steps = N * ceil(num_windows / batch_size)`
+  (so the cosine schedule anneals over the actual dataset) with `--max-steps`
+  available as an explicit override. `num_windows` is *estimated* from a
+  `--window-sample` of stocks rather than scanning the whole dataset, so sizing
+  is fast on large corpora. Validation is **step-based** (`--val-every-steps`,
+  bounded by `--val-batches`) instead of once per epoch, so `val_loss` is
+  reported frequently even when an epoch spans the entire dataset; the
+  best-`val_loss` checkpoint now saves whenever validation runs.
+- `ophir dashboard` (`ophir.dashboard`): a standalone, import-safe live training
+  dashboard with a per-target loss panel (read from the new `CSVLogger`
+  `metrics.csv`, auto-refreshing on a timer) and an on-demand response-block
+  leakage check against the latest checkpoint.
+- `ophir.leakage`: reusable leakage scorers — `response_block_leakage_score`
+  (CPU-safe, exercises only the masking helper) and `end_to_end_leakage_scores`
+  (per-target, full CUDA forward). Covered by `tests/test_leakage_score.py`.
+- A `CSVLogger` alongside the existing `TensorBoardLogger` in both trainer
+  factories, so training metrics are written to an easily parsed `metrics.csv`.
+
+### Changed
+
+- `LightningOHLCPredictor` now exposes the optimizer/scheduler hyper-parameters
+  (`lr`, `rezero_lr`, `weight_decay`, `betas`, `warmup_ratio`, `max_steps`) as
+  constructor arguments (saved with the checkpoint). `configure_optimizers` no
+  longer hardcodes a 100k-step cosine horizon — it is derived from
+  `trainer.estimated_stepping_batches`, falling back to `max_steps` for the
+  unsized streaming dataset. `fetch_base_trainer` gained a `max_steps` parameter
+  so the trainer and schedule share one horizon. New tests in
+  `tests/test_optimizer.py`.
+
+## [0.2.0] - 2026-06-18
+
+### Added
+
+- `scripts/leakage_viz.py`: a Gradio app that renders input-day attribution
+  heatmaps comparing the model with the response-block masking fix **off**
+  (leaky) vs **on** (fixed). Leakage shows as a bright diagonal in the response
+  region (forecasting a day from that same day's inputs); the fixed model
+  leaves that region dark.
+- Leakage regression tests: `tests/test_models_leakage.py` (CPU, pins the
+  masking helper) and `tests/test_models_leakage_realdata.py` (real-data
+  end-to-end through the GPU forward, auto-skipped without CUDA/data/checkpoint).
+
+### Fixed
+
+- **Data leakage:** the model was fed the values it was asked to forecast.
+  `feature_input` carried the response-block days' features (`r_close` /
+  `upside` / `downside` and the rolling features derived from them), which are
+  exactly the prediction targets, so the task was solvable by identity and all
+  losses/UI predictions were reading the answer. `OHLCMulitClassPredictor` now
+  replaces the response block with a learned `mask_token` before the
+  transformer (`_apply_response_mask`), forcing a genuine forecast from the
+  prefix. Existing checkpoints are invalidated and must be retrained.
+
+### Removed
+
+- The unused `winsorize_returns` flag on `extract_features` / `StockHanlder`,
+  which clipped `r_close` to full-series (future-inclusive) quantiles — a
+  lookahead foot-gun that was never wired into the streaming path.
 
 ## [0.1.7] - 2026-05-20
 
@@ -461,27 +652,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value yields a rotation of π.
 - Model validation and minor fixes.
 
-[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.11.3...HEAD
-[0.11.3]: https://github.com/kwcantrell/ophir/compare/v0.11.2...v0.11.3
-[0.11.2]: https://github.com/kwcantrell/ophir/compare/v0.11.1...v0.11.2
-[0.11.1]: https://github.com/kwcantrell/ophir/compare/v0.11.0...v0.11.1
-[0.11.0]: https://github.com/kwcantrell/ophir/compare/v0.10.3...v0.11.0
-[0.10.3]: https://github.com/kwcantrell/ophir/compare/v0.10.2...v0.10.3
-[0.10.2]: https://github.com/kwcantrell/ophir/compare/v0.10.1...v0.10.2
-[0.10.1]: https://github.com/kwcantrell/ophir/compare/v0.10.0...v0.10.1
-[0.10.0]: https://github.com/kwcantrell/ophir/compare/v0.9.1...v0.10.0
-[0.9.1]: https://github.com/kwcantrell/ophir/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/kwcantrell/ophir/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/kwcantrell/ophir/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/kwcantrell/ophir/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/kwcantrell/ophir/compare/v0.5.1...v0.6.0
-[0.5.1]: https://github.com/kwcantrell/ophir/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/kwcantrell/ophir/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/kwcantrell/ophir/compare/v0.3.2...v0.4.0
-[0.3.2]: https://github.com/kwcantrell/ophir/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/kwcantrell/ophir/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/kwcantrell/ophir/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/kwcantrell/ophir/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/kwcantrell/ophir/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/kwcantrell/ophir/compare/v0.6.5...v0.7.0
+[0.6.5]: https://github.com/kwcantrell/ophir/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/kwcantrell/ophir/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/kwcantrell/ophir/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/kwcantrell/ophir/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/kwcantrell/ophir/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/kwcantrell/ophir/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/kwcantrell/ophir/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/kwcantrell/ophir/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/kwcantrell/ophir/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/kwcantrell/ophir/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/kwcantrell/ophir/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/kwcantrell/ophir/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/kwcantrell/ophir/compare/v0.1.5...v0.1.6
