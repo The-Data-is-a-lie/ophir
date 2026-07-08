@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows training env: added `triton-windows` (win32-only dependency) so the
+  compiled flex-attention path works — torch ships `triton` only on Linux, and
+  `torch 2.10.0+cu130` training crashed with `ModuleNotFoundError: triton`
+  after a venv rebuild.
+
 ### Added
 
 - Autoresearch harness (`autoresearch/`): autonomous edit → time-boxed train →

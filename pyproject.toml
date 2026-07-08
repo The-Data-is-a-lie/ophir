@@ -31,6 +31,9 @@ dependencies = [
     "tensorboard>=2.20.0",
     "tensorboardx>=2.6.4",
     "torch>=2.10.0,<2.11",  # pinned: 2.11+ changes flex-attention and breaks the model
+    # torch ships triton only on Linux; compiled flex-attention needs it on Windows too.
+    # 3.6.x pairs with torch 2.10 (mirrors the linux triton==3.6.0 in uv.lock).
+    "triton-windows>=3.6,<3.7; sys_platform == 'win32'",
     "transformers>=4.57.6",
     "typer>=0.21.1",
     "yfinance>=1.3.0",
