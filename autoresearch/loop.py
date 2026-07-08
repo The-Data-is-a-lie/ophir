@@ -432,7 +432,12 @@ def run(
     timeout: float | None = None,
     input_text: str | None = None,
 ) -> tuple[int, str]:
-    """Run ``cmd``, merging stdout/stderr. Timeout → ``(-1, "TIMEOUT")``."""
+    """Run ``cmd``, merging stdout/stderr. Timeout → ``(-1, "TIMEOUT")``.
+
+    I/O is forced to UTF-8: on Windows ``text=True`` alone uses the locale
+    codec (cp1252), which cannot encode the proposer prompt's ``ε``/``≈``
+    and crashed the session mid-iteration.
+    """
     try:
         proc = subprocess.run(
             cmd,
@@ -441,6 +446,8 @@ def run(
             input=input_text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except subprocess.TimeoutExpired:
