@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Autoresearch loop: raised the trial train time-box from 600 s to 1500 s —
+  the 600 s assumed the RTX 3090 machine's ~6-min 10k-step baseline; on the
+  RTX 4080 SUPER with the full-depth store a baseline trial takes ~15 min,
+  so every trial would have been killed as `crash`.
+- Data store: one-off deep re-ingest of the ~507-ticker universe
+  (`ingest_many(..., days=9500)`) — the store previously held only the trading
+  loop's rolling 730-day window, leaving the autoresearch train split (< 2023)
+  with ~10 windows from 5 tickers and making local baselines meaningless.
 - Windows training env: added `triton-windows` (win32-only dependency) so the
   compiled flex-attention path works — torch ships `triton` only on Linux, and
   `torch 2.10.0+cu130` training crashed with `ModuleNotFoundError: triton`

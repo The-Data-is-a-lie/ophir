@@ -90,7 +90,11 @@ EPSILON = 0.02
 #: baseline of -0.3 or +0.5 means the harness, not the model, is broken.
 BASELINE_SANITY = (-0.02, 0.20)
 
-TRAIN_TIMEOUT_S = 600
+#: Measured 2026-07-08 on the RTX 4080 SUPER + full-depth store: a baseline
+#: 10k-step trial takes ~820-920 s, so 1500 s gives ~1.7x headroom while still
+#: rejecting proposals that blow up training cost. (The original 600 s assumed
+#: the RTX 3090 machine's ~6-min baseline.)
+TRAIN_TIMEOUT_S = 1500
 EVAL_TIMEOUT_S = 1800
 PROPOSE_TIMEOUT_S = 600
 MAX_STEPS = 10000
