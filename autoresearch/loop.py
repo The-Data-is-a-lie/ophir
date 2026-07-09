@@ -81,10 +81,11 @@ SEALED_IMPORT_LINE = (
 #: common non-year constants (128, 2048, 10000, ...).
 YEAR_LITERAL_RE = re.compile(r"\b20(19|2[0-9]|3[01])\b")
 
-#: Accept a trial only if rank_ic_near > best + EPSILON. Initial value sits
-#: above the confirm-harness 3-seed MDE (0.0069); MUST be recalibrated from
-#: >=3 baseline seeds (epsilon = 2*SE) before any unattended session.
-EPSILON = 0.02
+#: Accept a trial only if the mean rank_ic_near over SEEDS > best + EPSILON.
+#: 2*SE of a 3-seed mean from the 2026-07-08 recalibration (single-seed std
+#: 0.0426 -> SE_mean 0.0246; see autoresearch/records/epsilon-recal-2026-07-08.md).
+#: Re-derive whenever SEEDS, MAX_STEPS, the eval panel, or the store changes.
+EPSILON = 0.049
 
 #: Abort the session if the baseline metric falls outside this band — a
 #: baseline of -0.3 or +0.5 means the harness, not the model, is broken.
@@ -98,7 +99,11 @@ TRAIN_TIMEOUT_S = 1500
 EVAL_TIMEOUT_S = 1800
 PROPOSE_TIMEOUT_S = 600
 MAX_STEPS = 10000
-SEED = 0
+#: Every trial trains/scores once per seed and is judged on the MEAN
+#: rank_ic_near — single-seed spread on this metric is ~0.04, larger than any
+#: plausible per-edit effect. 3 seeds triples GPU cost per trial but shrinks
+#: the acceptance band by sqrt(3); keep EPSILON in sync when changing this.
+SEEDS: tuple[int, ...] = (0, 1, 2)
 PROPOSER_MODEL = "opus"
 MAX_CONSECUTIVE_PROPOSER_FAILS = 3
 
@@ -107,7 +112,18 @@ MAX_CONSECUTIVE_PROPOSER_FAILS = 3
 Runner = Callable[..., tuple[int, str]]
 
 RESULTS_HEADER = "\t".join(
-    ("iter", "utc", "hypothesis", "status", "rank_ic_near", "h1", "h5", "wall_s", "commit")
+    (
+        "iter",
+        "utc",
+        "hypothesis",
+        "status",
+        "rank_ic_near",
+        "h1",
+        "h5",
+        "wall_s",
+        "commit",
+        "seed_ics",
+    )
 )
 
 #: Metric keys copied from the harness JSON into the loop's bookkeeping.
@@ -389,6 +405,7 @@ def format_result_row(
     h5: float | None,
     wall_s: float,
     commit: str,
+    seed_ics: str = "",
 ) -> str:
     """Render one tab-separated results.tsv row (tabs/newlines sanitized)."""
 
@@ -408,6 +425,7 @@ def format_result_row(
         _num(h5),
         f"{wall_s:.0f}",
         commit,
+        " ".join(seed_ics.split()),
     )
     return "\t".join(cells)
 
@@ -534,7 +552,11 @@ Rules (violations are detected and the trial is discarded):
 
 
 class IterationResult:
-    """Outcome of one loop iteration (plain class: torch-free, no deps)."""
+    """Outcome of one loop iteration (plain class: torch-free, no deps).
+
+    ``rank_ic_near``/``h1``/``h5`` are MEANS over :data:`SEEDS`; ``seed_ics``
+    is the per-seed rank_ic_near breakdown as a ``|``-joined string.
+    """
 
     def __init__(
         self,
@@ -544,6 +566,7 @@ class IterationResult:
         h5: float | None,
         hypothesis: str,
         wall_s: float,
+        seed_ics: str = "",
     ) -> None:
         self.status = status
         self.rank_ic_near = rank_ic_near
@@ -551,6 +574,7 @@ class IterationResult:
         self.h5 = h5
         self.hypothesis = hypothesis
         self.wall_s = wall_s
+        self.seed_ics = seed_ics
 
 
 def _git(runner: Runner, args: list[str]) -> tuple[int, str]:
@@ -589,15 +613,21 @@ def run_iteration(
     epsilon: float,
     runner: Runner = run,
 ) -> IterationResult:
-    """Run one propose → commit → train → score → decide cycle."""
+    """Run one propose → commit → per-seed train/score → decide-on-mean cycle."""
     start = time.monotonic()
     iter_dir = os.path.join(session_dir, f"iter-{iteration:03d}")
     os.makedirs(iter_dir, exist_ok=True)
     hypothesis_path = os.path.join(session_dir, ".hypothesis")
     hypothesis = "baseline"
 
-    def _done(status: str, ic: float | None, h1: float | None, h5: float | None) -> IterationResult:
-        return IterationResult(status, ic, h1, h5, hypothesis, time.monotonic() - start)
+    def _done(
+        status: str,
+        ic: float | None,
+        h1: float | None,
+        h5: float | None,
+        seed_ics: str = "",
+    ) -> IterationResult:
+        return IterationResult(status, ic, h1, h5, hypothesis, time.monotonic() - start, seed_ics)
 
     if propose:
         program_text = _read(os.path.join(HARNESS_DIR, "program.md"))
@@ -641,55 +671,73 @@ def run_iteration(
             _revert(runner, base_sha)
             return _done("invalid", None, None, None)
 
-    rc, _out = runner(
-        [
-            "uv",
-            "run",
-            "python",
-            MUTABLE_FILE,
-            "--max-steps",
-            str(MAX_STEPS),
-            "--seed",
-            str(SEED),
-            "--out-dir",
-            iter_dir,
-        ],
-        cwd=REPO_ROOT,
-        timeout=TRAIN_TIMEOUT_S,
-    )
-    ckpts = sorted(glob.glob(os.path.join(iter_dir, "best*.ckpt")))
-    if rc != 0 or not ckpts:
-        if propose:
-            _revert(runner, base_sha)
-        return _done("crash", None, None, None)
+    # One train + eval per seed; any seed failure wastes the whole trial. The
+    # decision metric is the MEAN over seeds (single-seed noise is ~2x any
+    # plausible per-edit effect; see EPSILON).
+    per_seed: list[dict[str, float]] = []
+    for seed in SEEDS:
+        seed_dir = os.path.join(iter_dir, f"seed-{seed}")
+        os.makedirs(seed_dir, exist_ok=True)
+        rc, _out = runner(
+            [
+                "uv",
+                "run",
+                "python",
+                MUTABLE_FILE,
+                "--max-steps",
+                str(MAX_STEPS),
+                "--seed",
+                str(seed),
+                "--out-dir",
+                seed_dir,
+            ],
+            cwd=REPO_ROOT,
+            timeout=TRAIN_TIMEOUT_S,
+        )
+        ckpts = sorted(glob.glob(os.path.join(seed_dir, "best*.ckpt")))
+        if rc != 0 or not ckpts:
+            if propose:
+                _revert(runner, base_sha)
+            return _done("crash", None, None, None)
 
-    metrics_path = os.path.join(iter_dir, "metrics.json")
-    rc, _out = runner(
-        [
-            "uv",
-            "run",
-            "python",
-            os.path.join(HARNESS_DIR, "eval_harness.py"),
-            "--ckpt",
-            ckpts[-1],
-            "--out",
-            metrics_path,
-        ],
-        cwd=REPO_ROOT,
-        timeout=EVAL_TIMEOUT_S,
-    )
-    if rc != 0 or not os.path.exists(metrics_path):
-        if propose:
-            _revert(runner, base_sha)
-        return _done("crash", None, None, None)
+        metrics_path = os.path.join(seed_dir, "metrics.json")
+        rc, _out = runner(
+            [
+                "uv",
+                "run",
+                "python",
+                os.path.join(HARNESS_DIR, "eval_harness.py"),
+                "--ckpt",
+                ckpts[-1],
+                "--out",
+                metrics_path,
+            ],
+            cwd=REPO_ROOT,
+            timeout=EVAL_TIMEOUT_S,
+        )
+        if rc != 0 or not os.path.exists(metrics_path):
+            if propose:
+                _revert(runner, base_sha)
+            return _done("crash", None, None, None)
+        per_seed.append(parse_metrics(metrics_path))
 
-    metrics = parse_metrics(metrics_path)
-    ic = metrics.get("rank_ic_near")
-    if decide(ic, best_ic, epsilon):
-        return _done("keep", ic, metrics.get("h1"), metrics.get("h5"))
+    ics = [m.get("rank_ic_near", float("nan")) for m in per_seed]
+    mean_ic = sum(ics) / len(ics)  # a NaN seed poisons the mean -> decide() rejects
+    seed_ics = "|".join("nan" if v != v else f"{v:.5f}" for v in ics)
+    h1 = _mean([m["h1"] for m in per_seed if "h1" in m])
+    h5 = _mean([m["h5"] for m in per_seed if "h5" in m])
+    if decide(mean_ic, best_ic, epsilon):
+        return _done("keep", mean_ic, h1, h5, seed_ics)
     if propose:
         _revert(runner, base_sha)
-    return _done("discard", ic, metrics.get("h1"), metrics.get("h5"))
+    return _done("discard", mean_ic, h1, h5, seed_ics)
+
+
+def _mean(values: list[float]) -> float | None:
+    """Mean of ``values``; ``None`` for an empty list (NaN propagates)."""
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def _read(path: str) -> str:
@@ -826,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                 h5=result.h5,
                 wall_s=result.wall_s,
                 commit=_head_sha()[:7],
+                seed_ics=result.seed_ics,
             ),
         )
         os.remove(in_flight)

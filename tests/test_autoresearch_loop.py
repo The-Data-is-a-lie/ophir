@@ -6,6 +6,8 @@ import importlib.util
 import math
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
     "autoresearch_loop", REPO_ROOT / "autoresearch" / "loop.py"
@@ -275,11 +277,29 @@ class TestMetricsAndResults:
             h5=0.05,
             wall_s=412.0,
             commit="abc1234",
+            seed_ics="0.06100|0.05900|0.06300",
         )
         cells = row.split("\t")
         assert len(cells) == len(loop.RESULTS_HEADER.split("\t"))
         assert cells[2] == "try ranking loss"
         assert cells[3] == "keep"
+        assert cells[-1] == "0.06100|0.05900|0.06300"
+
+    def test_result_row_seed_ics_defaults_empty(self) -> None:
+        row = loop.format_result_row(
+            iteration=0,
+            utc="2026-07-07T05:00:00Z",
+            hypothesis="baseline",
+            status="keep",
+            rank_ic_near=0.06,
+            h1=None,
+            h5=None,
+            wall_s=1.0,
+            commit="abc1234",
+        )
+        cells = row.split("\t")
+        assert len(cells) == len(loop.RESULTS_HEADER.split("\t"))
+        assert cells[-1] == ""
 
     def test_append_result_writes_header_once(self, tmp_path: Path) -> None:
         tsv = tmp_path / "results.tsv"
@@ -318,12 +338,16 @@ class FakeRunner:
 BASE_SHA = "base0000"
 
 
-def _make_session(tmp_path: Path, iter_name: str, metrics: str) -> str:
+def _make_session(tmp_path: Path, iter_name: str, metrics: str | list[str]) -> str:
+    """Session dir with one pre-scored artifact set per seed (str = same for all)."""
+    per_seed = [metrics] * len(loop.SEEDS) if isinstance(metrics, str) else metrics
     session_dir = tmp_path / "runs" / "s1"
     iter_dir = session_dir / iter_name
-    iter_dir.mkdir(parents=True)
-    (iter_dir / "metrics.json").write_text(metrics)
-    (iter_dir / "best-step=1.ckpt").write_text("stub")
+    for seed, payload in zip(loop.SEEDS, per_seed, strict=True):
+        seed_dir = iter_dir / f"seed-{seed}"
+        seed_dir.mkdir(parents=True)
+        (seed_dir / "metrics.json").write_text(payload)
+        (seed_dir / "best-step=1.ckpt").write_text("stub")
     (session_dir / ".hypothesis").write_text("wider near-band loss weighting")
     return str(session_dir)
 
@@ -339,14 +363,27 @@ class TestRunIteration:
         return FakeRunner({"status --porcelain": (0, f" M {loop.MUTABLE_FILE}\n")})
 
     def test_keep_flow_commits_and_never_resets(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
+        session_dir = _make_session(
+            tmp_path,
+            "iter-001",
+            [
+                '{"rank_ic_near": 0.30, "h1": 0.2, "h5": 0.1}',
+                '{"rank_ic_near": 0.24, "h1": 0.1, "h5": 0.0}',
+                '{"rank_ic_near": 0.24, "h1": 0.0, "h5": 0.2}',
+            ],
+        )
         _experiment_file_ok(monkeypatch, tmp_path)
         runner = self._propose_runner()
         result = loop.run_iteration(
             1, session_dir, 0.03, BASE_SHA, propose=True, epsilon=0.02, runner=runner
         )
         assert result.status == "keep"
-        assert result.rank_ic_near == 0.08
+        assert result.rank_ic_near == pytest.approx(0.26)  # mean over the 3 seeds
+        assert result.h1 == pytest.approx(0.1)
+        assert result.seed_ics == "0.30000|0.24000|0.24000"
+        train_cmds = runner.commands("train_experiment.py --max-steps")
+        seeds = [c[c.index("--seed") + 1] for c in train_cmds]
+        assert seeds == [str(s) for s in loop.SEEDS]  # one train per seed, in order
         commit_cmds = runner.commands("git commit")
         assert commit_cmds and "--no-verify" in commit_cmds[0]
         assert not runner.commands("reset --hard")
@@ -359,8 +396,21 @@ class TestRunIteration:
             1, session_dir, 0.03, BASE_SHA, propose=True, epsilon=0.02, runner=runner
         )
         assert result.status == "discard"
+        assert result.rank_ic_near == pytest.approx(0.031)
         resets = runner.commands("reset --hard")
         assert resets and resets[0][-1] == BASE_SHA
+
+    def test_missing_seed_checkpoint_is_crash(self, tmp_path, monkeypatch) -> None:
+        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.30}')
+        second_seed = loop.SEEDS[1]
+        (Path(session_dir) / "iter-001" / f"seed-{second_seed}" / "best-step=1.ckpt").unlink()
+        _experiment_file_ok(monkeypatch, tmp_path)
+        runner = self._propose_runner()
+        result = loop.run_iteration(
+            1, session_dir, None, BASE_SHA, propose=True, epsilon=0.02, runner=runner
+        )
+        assert result.status == "crash"
+        assert runner.commands("reset --hard")
 
     def test_invalid_diff_never_trains(self, tmp_path, monkeypatch) -> None:
         session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
@@ -531,7 +581,8 @@ class TestCrossSessionRecovery:
             assert rows[0] == loop.RESULTS_HEADER
             assert "runner-died" in rows[1]
             assert "(recovered interrupted iteration)" in rows[1]
-            assert rows[1].endswith("post9999"[:7])
+            header = loop.RESULTS_HEADER.split("\t")
+            assert rows[1].split("\t")[header.index("commit")] == "post9999"[:7]
         reset_shas = [c[-1] for c in calls if c[:3] == ["git", "reset", "--hard"]]
         assert "aaaa111" in reset_shas and "bbbb222" in reset_shas
 

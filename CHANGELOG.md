@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `torch 2.10.0+cu130` training crashed with `ModuleNotFoundError: triton`
   after a venv rebuild.
 
+### Changed
+
+- Autoresearch loop: trials are now judged on the **mean `rank_ic_near` over
+  3 seeds** (`SEEDS = (0, 1, 2)`) instead of a single seed — session
+  s1-20260708 showed single-seed spread (0.068–0.145) swamps any plausible
+  per-edit effect. Acceptance ε drops 0.0852 → 0.049 (2·SE of a 3-seed
+  mean); `results.tsv` gains a `seed_ics` per-seed breakdown column; any
+  seed failure crashes the trial.
+
 ### Added
 
 - Autoresearch harness (`autoresearch/`): autonomous edit → time-boxed train →

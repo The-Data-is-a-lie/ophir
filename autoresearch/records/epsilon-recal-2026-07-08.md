@@ -31,3 +31,19 @@ trading loop's rolling 730-day window, so earlier smoke numbers are void).
   the acceptance bar. Session launch: `--epsilon 0.0852`.
 - Follow-up worth considering if sessions keep discarding plausible wins:
   average 2–3 seeds per trial in the loop (3× GPU cost) to shrink ε.
+
+## Amendment (2026-07-08 evening): 3-seed trials
+
+Adopted the follow-up above — the loop now trains seeds (0, 1, 2) per trial
+and decides on the **mean** `rank_ic_near` (session `s1-20260708` discarded
+all four single-seed proposals; the ε=0.0852 bar only admits transformative
+effects).
+
+- SE of a 3-seed mean = 0.04259 / √3 = **0.02459** → **ε = 2·SE ≈ 0.049**.
+- Trial cost: ~3 × 15 min train + 3 × 10 s eval ≈ 46 min GPU (plus proposer).
+- The in-session baseline (iteration 0) now measures the same three seeds as
+  this recalibration, so it must reproduce mean **0.09635** exactly
+  (deterministic same-store re-run) — a drift means the store changed.
+- Seed-count tradeoff on the RTX 4080 SUPER: ε ∝ 1/√n, wall-clock ∝ n —
+  5 seeds would give ε ≈ 0.038 at ~77 min/trial (~6 trials/night vs ~9).
+  Search stays at 3 seeds; reserve ≥5 seeds for graduating a champion.

@@ -176,3 +176,24 @@ follows — then stop and report. Unattended overnight runs are a later
 - Wiring any champion into `src/ophir` or the trading seam.
 - OS-level sandboxing of the proposer (single-user local box; the allowlist
   plus worktree isolation is the v1 containment).
+
+## Amendments
+
+### 2026-07-08 — measured operating point + 3-seed trials
+
+Applied after the first day of real runs (env repair, deep data re-ingest,
+smoke + session `s1-20260708`):
+
+- **Train time-box 600 s → 1500 s.** The 600 s figure assumed the RTX 3090
+  machine (10k steps ≈ 6 min); on the RTX 4080 SUPER against the full-depth
+  store a baseline 10k-step trial takes ~820–920 s.
+- **Subprocess I/O is UTF-8.** `text=True` alone used cp1252 on Windows and
+  could not encode the proposer prompt (`ε`, `≈`), crashing mid-iteration.
+- **3-seed trials.** Session `s1-20260708` (single-seed, ε = 0.0852 = 2·SE
+  of one seed) discarded all four proposals; single-seed spread (0.068–0.145
+  across the baseline seeds) swamps any plausible per-edit effect. The loop
+  now trains `SEEDS = (0, 1, 2)` per trial and decides on the **mean**
+  `rank_ic_near`; ε = 2·SE of a 3-seed mean ≈ **0.049**. Any seed failure is
+  a trial `crash`. `results.tsv` gains a `seed_ics` column with the per-seed
+  breakdown. Graduation still uses more seeds + full budget
+  (see `autoresearch/records/epsilon-recal-2026-07-08.md`).

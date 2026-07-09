@@ -11,7 +11,9 @@ only changes with a real mechanism will clear ε.
 ## Ground rules
 
 - One focused change per iteration. Keep `train_experiment.py` runnable and
-  self-consistent; your run is killed at 25 minutes (baseline uses ~15).
+  self-consistent. Each trial trains seeds 0/1/2 and is judged on the MEAN;
+  each seed's run is killed at 25 minutes (the baseline uses ~15), so a
+  change that slows training much beyond that wastes the whole trial.
 - You may inline any ophir component into `train_experiment.py` (e.g. copy a
   method into `ExperimentPredictor` and modify it) — but never edit files
   under `src/ophir`.
@@ -66,10 +68,10 @@ only changes with a real mechanism will clear ε.
 
 ## Measurement honesty (why some wins don't count)
 
-- Acceptance needs `rank_ic_near > best + ε` (ε set by the runner; your
-  10k-step single-seed measurement is noisy — most true small gains will
-  not clear it, and that is intentional).
-- A 10k-step win can be a proxy artifact; champions face multi-seed and
+- Acceptance needs mean-over-3-seeds `rank_ic_near > best + ε` (ε set by the
+  runner, ≈0.049 — 2·SE of a 3-seed mean at 10k steps). Most true small
+  gains will still not clear it, and that is intentional.
+- A 10k-step win can be a proxy artifact; champions face more seeds and
   full-budget re-runs at graduation. Prefer changes with a mechanism, not
   a lucky number.
 
