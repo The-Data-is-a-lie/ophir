@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import glob
 import hashlib
 import json
@@ -483,10 +484,9 @@ def run(
             )
         else:
             proc.kill()
-        try:  # drain so the dead tree's pipes close; never block the loop again
+        # Drain so the dead tree's pipes close; never block the loop again.
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             proc.communicate(timeout=30)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
         return (-1, "TIMEOUT")
     return (proc.returncode, out or "")
 
