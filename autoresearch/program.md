@@ -98,7 +98,7 @@ only changes with a real mechanism will clear ε.
   full-budget re-runs at graduation. Prefer changes with a mechanism, not
   a lucky number.
 
-## Session s3 directives (2026-07-09 — this session only; removed at curation)
+## Session s4 directives (2026-07-09 — this session only; removed at curation)
 
 This is a directed 2-trial session. Follow this order exactly:
 

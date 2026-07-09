@@ -696,6 +696,15 @@ def run_iteration(
     for seed in SEEDS:
         seed_dir = os.path.join(iter_dir, f"seed-{seed}")
         os.makedirs(seed_dir, exist_ok=True)
+        # A restarted session reuses iteration dirs: artifacts left by a dead
+        # attempt must never be scoreable. (On 2026-07-09 the alphabetical
+        # ckpts[-1] pick scored a dead trial's stale checkpoint, poisoning the
+        # measurement.) Purge before training so only THIS run's outputs exist.
+        for stale in glob.glob(os.path.join(seed_dir, "best*.ckpt")):
+            os.remove(stale)
+        stale_metrics = os.path.join(seed_dir, "metrics.json")
+        if os.path.exists(stale_metrics):
+            os.remove(stale_metrics)
         rc, _out = runner(
             [
                 "uv",

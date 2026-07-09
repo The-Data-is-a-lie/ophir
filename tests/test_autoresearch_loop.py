@@ -5,8 +5,12 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -311,10 +315,20 @@ class TestMetricsAndResults:
 
 
 class FakeRunner:
-    """Scripted subprocess stand-in: maps a command marker to (rc, output)."""
+    """Scripted subprocess stand-in: maps a command marker to (rc, output).
 
-    def __init__(self, script: dict[str, tuple[int, str]]) -> None:
+    ``effects`` maps a marker to a callable invoked with the command before
+    the scripted result is returned — it materializes what the real
+    subprocess would have written (checkpoints, metrics files).
+    """
+
+    def __init__(
+        self,
+        script: dict[str, tuple[int, str]],
+        effects: dict[str, Callable[[list[str]], None]] | None = None,
+    ) -> None:
         self.script = script
+        self.effects = effects or {}
         self.calls: list[list[str]] = []
 
     def __call__(
@@ -326,8 +340,12 @@ class FakeRunner:
         input_text: str | None = None,
     ) -> tuple[int, str]:
         self.calls.append(cmd)
+        joined = " ".join(cmd)
+        for marker, effect in self.effects.items():
+            if marker in joined:
+                effect(cmd)
         for marker, result in self.script.items():
-            if marker in " ".join(cmd):
+            if marker in joined:
                 return result
         return (0, "")
 
@@ -338,18 +356,38 @@ class FakeRunner:
 BASE_SHA = "base0000"
 
 
-def _make_session(tmp_path: Path, iter_name: str, metrics: str | list[str]) -> str:
-    """Session dir with one pre-scored artifact set per seed (str = same for all)."""
-    per_seed = [metrics] * len(loop.SEEDS) if isinstance(metrics, str) else metrics
+def _make_session(tmp_path: Path) -> str:
+    """Bare session dir; train/eval artifacts come from FakeRunner effects."""
     session_dir = tmp_path / "runs" / "s1"
-    iter_dir = session_dir / iter_name
-    for seed, payload in zip(loop.SEEDS, per_seed, strict=True):
-        seed_dir = iter_dir / f"seed-{seed}"
-        seed_dir.mkdir(parents=True)
-        (seed_dir / "metrics.json").write_text(payload)
-        (seed_dir / "best-step=1.ckpt").write_text("stub")
+    session_dir.mkdir(parents=True)
     (session_dir / ".hypothesis").write_text("wider near-band loss weighting")
     return str(session_dir)
+
+
+def _train_eval_effects(
+    metrics_per_seed: dict[str, str], skip_ckpt_for: str | None = None
+) -> dict[str, Callable[[list[str]], None]]:
+    """Effects that write what real train/eval subprocesses would write.
+
+    ``metrics_per_seed`` keys are seed dir names (``seed-0`` ...);
+    ``skip_ckpt_for`` simulates a training run that produced no checkpoint.
+    """
+
+    def _train(cmd: list[str]) -> None:
+        out_dir = Path(cmd[cmd.index("--out-dir") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if out_dir.name != skip_ckpt_for:
+            (out_dir / "best-step=1.ckpt").write_text("stub")
+
+    def _eval(cmd: list[str]) -> None:
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.write_text(metrics_per_seed[out.parent.name])
+
+    return {"train_experiment.py --max-steps": _train, "eval_harness.py": _eval}
+
+
+def _same_metrics(payload: str) -> dict[str, str]:
+    return {f"seed-{seed}": payload for seed in loop.SEEDS}
 
 
 def _experiment_file_ok(monkeypatch, tmp_path: Path) -> None:
@@ -359,21 +397,23 @@ def _experiment_file_ok(monkeypatch, tmp_path: Path) -> None:
 
 
 class TestRunIteration:
-    def _propose_runner(self, metrics_ok: bool = True) -> FakeRunner:
-        return FakeRunner({"status --porcelain": (0, f" M {loop.MUTABLE_FILE}\n")})
+    def _propose_runner(
+        self, effects: dict[str, Callable[[list[str]], None]] | None = None
+    ) -> FakeRunner:
+        return FakeRunner({"status --porcelain": (0, f" M {loop.MUTABLE_FILE}\n")}, effects)
 
     def test_keep_flow_commits_and_never_resets(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(
-            tmp_path,
-            "iter-001",
-            [
-                '{"rank_ic_near": 0.30, "h1": 0.2, "h5": 0.1}',
-                '{"rank_ic_near": 0.24, "h1": 0.1, "h5": 0.0}',
-                '{"rank_ic_near": 0.24, "h1": 0.0, "h5": 0.2}',
-            ],
-        )
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
-        runner = self._propose_runner()
+        runner = self._propose_runner(
+            _train_eval_effects(
+                {
+                    "seed-0": '{"rank_ic_near": 0.30, "h1": 0.2, "h5": 0.1}',
+                    "seed-1": '{"rank_ic_near": 0.24, "h1": 0.1, "h5": 0.0}',
+                    "seed-2": '{"rank_ic_near": 0.24, "h1": 0.0, "h5": 0.2}',
+                }
+            )
+        )
         result = loop.run_iteration(
             1, session_dir, 0.03, BASE_SHA, propose=True, epsilon=0.02, runner=runner
         )
@@ -389,9 +429,9 @@ class TestRunIteration:
         assert not runner.commands("reset --hard")
 
     def test_discard_flow_resets_to_base_sha(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.031}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
-        runner = self._propose_runner()
+        runner = self._propose_runner(_train_eval_effects(_same_metrics('{"rank_ic_near": 0.031}')))
         result = loop.run_iteration(
             1, session_dir, 0.03, BASE_SHA, propose=True, epsilon=0.02, runner=runner
         )
@@ -401,19 +441,40 @@ class TestRunIteration:
         assert resets and resets[0][-1] == BASE_SHA
 
     def test_missing_seed_checkpoint_is_crash(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.30}')
-        second_seed = loop.SEEDS[1]
-        (Path(session_dir) / "iter-001" / f"seed-{second_seed}" / "best-step=1.ckpt").unlink()
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
-        runner = self._propose_runner()
+        second = f"seed-{loop.SEEDS[1]}"
+        runner = self._propose_runner(
+            _train_eval_effects(_same_metrics('{"rank_ic_near": 0.30}'), skip_ckpt_for=second)
+        )
         result = loop.run_iteration(
             1, session_dir, None, BASE_SHA, propose=True, epsilon=0.02, runner=runner
         )
         assert result.status == "crash"
         assert runner.commands("reset --hard")
 
+    def test_stale_seed_artifacts_are_purged_before_training(self, tmp_path, monkeypatch) -> None:
+        # Regression (2026-07-09): a restarted session reuses iteration dirs;
+        # a dead attempt's checkpoint sorted after the fresh one and got
+        # scored. The purge must remove it before training.
+        session_dir = _make_session(tmp_path)
+        stale_dir = Path(session_dir) / "iter-001" / f"seed-{loop.SEEDS[0]}"
+        stale_dir.mkdir(parents=True)
+        stale_ckpt = stale_dir / "best-step=9999-val_rank_ic_near=0.99999.ckpt"
+        stale_ckpt.write_text("stale")
+        (stale_dir / "metrics.json").write_text('{"rank_ic_near": 0.99}')
+        _experiment_file_ok(monkeypatch, tmp_path)
+        runner = self._propose_runner(_train_eval_effects(_same_metrics('{"rank_ic_near": 0.05}')))
+        result = loop.run_iteration(
+            1, session_dir, None, BASE_SHA, propose=True, epsilon=0.02, runner=runner
+        )
+        assert result.rank_ic_near == pytest.approx(0.05)  # not the stale 0.99
+        assert not stale_ckpt.exists()
+        scored = [c[c.index("--ckpt") + 1] for c in runner.commands("eval_harness.py")]
+        assert scored and all("9999" not in p for p in scored)
+
     def test_invalid_diff_never_trains(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
         runner = FakeRunner({"status --porcelain": (0, " M src/ophir/safety.py\n")})
         result = loop.run_iteration(
@@ -424,7 +485,7 @@ class TestRunIteration:
         assert runner.commands("reset --hard")
 
     def test_failed_commit_is_invalid_and_never_trains(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
         runner = FakeRunner(
             {
@@ -439,7 +500,7 @@ class TestRunIteration:
         assert not runner.commands("train_experiment.py --max-steps")
 
     def test_proposer_failure_is_its_own_status(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
         runner = FakeRunner({"claude": (1, "not logged in")})
         result = loop.run_iteration(
@@ -449,7 +510,7 @@ class TestRunIteration:
         assert not runner.commands("train_experiment.py --max-steps")
 
     def test_train_timeout_is_crash_and_resets(self, tmp_path, monkeypatch) -> None:
-        session_dir = _make_session(tmp_path, "iter-001", '{"rank_ic_near": 0.08}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
         runner = FakeRunner(
             {
@@ -466,9 +527,9 @@ class TestRunIteration:
     def test_baseline_iteration_skips_proposal_and_never_commits(
         self, tmp_path, monkeypatch
     ) -> None:
-        session_dir = _make_session(tmp_path, "iter-000", '{"rank_ic_near": 0.06}')
+        session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
-        runner = FakeRunner({})
+        runner = FakeRunner({}, _train_eval_effects(_same_metrics('{"rank_ic_near": 0.06}')))
         result = loop.run_iteration(
             0, session_dir, None, BASE_SHA, propose=False, epsilon=0.02, runner=runner
         )
