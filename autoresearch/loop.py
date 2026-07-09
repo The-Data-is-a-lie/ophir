@@ -455,22 +455,40 @@ def run(
     I/O is forced to UTF-8: on Windows ``text=True`` alone uses the locale
     codec (cp1252), which cannot encode the proposer prompt's ``ε``/``≈``
     and crashed the session mid-iteration.
+
+    A timeout kills the WHOLE process tree (``taskkill /T`` on Windows):
+    ``subprocess.run``'s own kill only reaches the direct child — the ``uv``
+    shim — leaving the python grandchild alive holding the output pipe, which
+    blocked the 2026-07-09 session forever in ``communicate()`` and orphaned
+    a GPU trainer.
     """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            timeout=timeout,
-            input=input_text,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        out, _err = proc.communicate(input=input_text, timeout=timeout)
     except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            proc.kill()
+        try:  # drain so the dead tree's pipes close; never block the loop again
+            proc.communicate(timeout=30)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
         return (-1, "TIMEOUT")
-    return (proc.returncode, proc.stdout + proc.stderr)
+    return (proc.returncode, out or "")
 
 
 def pin_hashes(
