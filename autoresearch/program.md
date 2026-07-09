@@ -98,6 +98,22 @@ only changes with a real mechanism will clear ε.
   full-budget re-runs at graduation. Prefer changes with a mechanism, not
   a lucky number.
 
+## Session s3 directives (2026-07-09 — this session only; removed at curation)
+
+This is a directed 2-trial session. Follow this order exactly:
+
+1. **Iteration 1 — aux-head ablation, verbatim.** Set `upside_weight: 0.0`
+   and `downside_weight: 0.0` in `MODEL_KWARGS` (from 0.5/0.5). Nothing
+   else. Rationale: the two intraday-range heads are far more learnable
+   than forward returns and dominate the shared trunk's gradient, while
+   the metric scores only `r_close`.
+2. **Iteration 2 — one EMA-family extension.** NOT the decay-0.999
+   variant verbatim (already measured, 0.105). Pick ONE: a different
+   decay (e.g. 0.9995 or 0.998), starting the EMA after warmup, or EMA
+   layered on iteration 1's outcome (if kept, it is already in the file
+   you receive). One conceptual change; keep the swap-in/swap-out
+   pattern so training itself is untouched.
+
 ## When stuck
 
 If 3+ consecutive proposals are discarded, switch families (e.g. from loss
