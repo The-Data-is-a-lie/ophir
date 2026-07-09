@@ -50,21 +50,44 @@ only changes with a real mechanism will clear ε.
     is ±0.04, so read as "no evidence of gain", not proof of harm. The
     vol-normalized target's h1=0.264 and the input-normalization's
     h5=0.168 were the best sub-metrics seen; unconfirmed.
+- Session 2026-07-09 overnight (3-seed means, ε=0.049, baseline 0.09635):
+  6 trials, ALL discarded.
+  - RankNet pairwise ranking loss on offsets 1–5 at weight 0.01 → 0.088.
+    A light auxiliary weight adds nothing; if retrying this family, use a
+    materially stronger weight or a listwise objective — not 0.01 again.
+  - Shrinking the training response block 90 → 20 days → **−0.016, the
+    worst result recorded.** The eval harness scores 90-day response
+    windows, so training on a different response geometry is a train/eval
+    mismatch, not a framing win. Do NOT change RESPONSE_SIZE.
+  - EMA (Polyak, decay 0.999) of weights swapped in for validation and
+    checkpointing → **0.105, the best challenger yet** (baseline 0.096;
+    bar 0.145). Mechanism directly targets the 0.068–0.145 seed spread.
+    Extending it (different decay, averaging window, or combined with
+    another variance reducer) is the most promising known lead.
+  - Lower-variance checkpoint selection (150 val batches every 1000 steps)
+    → 0.092 (neutral). Streamer cache 8 → 32 for batch decorrelation
+    → 0.073 (no gain).
+  - Interrupted before training (queued, untested): ablate the upside/
+    downside auxiliary heads (loss weights 1.0/0.5/0.5 → 1.0/0.0/0.0) so
+    the full trunk serves the one channel the metric scores.
 
 ## Promising directions (highest leverage first)
 
-1. **Rank the cross-section, don't regress it.** Add a pairwise/listwise
-   ranking term on `r_close` within each day's cross-section — the decision
-   is "long the top names", so ranking loss aligns training with use.
-   UNTRIED as of 2026-07-08 — start here.
-2. **Response-block framing.** A shorter effective horizon (smaller
-   `RESPONSE_SIZE`, keeping eval offsets 1–5 intact) may stop far-horizon
-   noise from dominating gradients.
-3. **Feature-side ideas** with strict causal lagging — but note the
+1. **Variance reduction on the final iterate.** EMA-for-validation was the
+   best challenger (0.105 vs baseline 0.096) — extend that mechanism
+   (decay/window variants, or EMA combined with the queued aux-head
+   ablation), don't re-propose it verbatim.
+2. **Aux-head ablation (queued, untested).** Zero the upside/downside loss
+   weights so the trunk serves only `r_close` — interrupted before
+   training on 2026-07-09; still the top untested single edit.
+3. **Ranking the cross-section** — only with a materially stronger weight
+   or a listwise objective (0.01-weight RankNet already showed nothing).
+4. **Feature-side ideas** with strict causal lagging — but note the
    vol-normalization family already showed no gain (see Known results);
    prefer a different feature mechanism.
-4. Architecture changes last — the evidence says the ceiling is framing,
-   not capacity.
+5. Architecture changes last — the evidence says the ceiling is framing,
+   not capacity. Do NOT touch `RESPONSE_SIZE` (train/eval geometry
+   mismatch; see Known results).
 
 ## Measurement honesty (why some wins don't count)
 
