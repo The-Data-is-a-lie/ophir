@@ -90,12 +90,17 @@ def fred_key(key: str) -> None:
 @app.command()
 def ingest(
     symbol: str,
-    days: int = typer.Option(730, help="Calendar days of Yahoo Finance history to fetch."),
+    # 9500 mirrors ophir.agent.ingest.DEEP_DAYS (kept literal so --help stays light).
+    days: int = typer.Option(
+        9500,
+        help="Calendar days of Yahoo Finance history to fetch (deep default keeps "
+        "the auto-adjusted history self-consistent; a shallow value is spliced "
+        "onto stored history, never truncating it).",
+    ),
 ) -> None:
     """Ingest a ticker's daily OHLC from Yahoo Finance into a model-ready dataset.
 
-    Pulls ``days`` of history (default ~2 years, enough for the model's 365-day
-    window plus rolling-feature warmup) and writes
+    Pulls ``days`` of history (default ~26 years) and writes
     ``<DATA_DIR>/days/stocks/symbol=<SYMBOL>/data.parquet``. Reuses
     :func:`ophir.ticker.extract_features` downstream; no GPU required.
 
@@ -104,7 +109,8 @@ def ingest(
     symbol : str
         Ticker symbol to ingest (e.g. ``AAPL``).
     days : int, optional
-        Calendar days of history to fetch. Defaults to ``730``.
+        Calendar days of history to fetch. Defaults to ``9500``
+        (:data:`ophir.agent.ingest.DEEP_DAYS`).
     """
     from ophir.agent.ingest import ingest as ingest_ticker
 

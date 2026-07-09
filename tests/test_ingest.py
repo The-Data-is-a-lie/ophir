@@ -144,6 +144,57 @@ def test_ingest_many_all_fail_is_safe(monkeypatch, tmp_path):
     assert paths == {}  # never raises; just an empty result
 
 
+def _sequential_ticker(monkeypatch, frames):
+    """Patch ``yfinance.Ticker`` to return each frame in ``frames``, in order."""
+    queue = [f.copy() for f in frames]
+
+    class _SeqTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            return queue.pop(0)
+
+    monkeypatch.setattr("yfinance.Ticker", _SeqTicker)
+
+
+def test_shallow_refresh_never_truncates(monkeypatch, make_ohlcv, tmp_path, capsys):
+    # Deep ingest first, then a shallow refresh with drifted prices: the stored
+    # head must survive, the overlap must take the NEW values, and the splice
+    # must be called out.
+    deep = _yahoo_frame(make_ohlcv, n_days=500)
+    shallow = deep.iloc[-120:].copy()
+    for col in ("Open", "High", "Low", "Close"):
+        shallow[col] = shallow[col] * 1.5
+    _sequential_ticker(monkeypatch, [deep, shallow])
+
+    ingest("TEST", stocks_dir=str(tmp_path))  # deep default
+    dest = ingest("TEST", days=120, stocks_dir=str(tmp_path))
+
+    out = pd.read_parquet(dest).set_index("utc_time").sort_index()
+    assert len(out) == 500  # nothing lost
+    assert out.index.min() == deep.index.min().tz_localize(None)
+    boundary = shallow.index.min().tz_localize(None)
+    assert out.loc[out.index >= boundary, "close"].iloc[0] == pytest.approx(
+        float(shallow["Close"].iloc[0])
+    )
+    assert "spliced onto stored history" in capsys.readouterr().out
+
+
+def test_deep_refresh_overwrites_cleanly(monkeypatch, make_ohlcv, tmp_path, capsys):
+    # Shallow store first, then a deep fetch: replaced wholesale, no splice.
+    deep = _yahoo_frame(make_ohlcv, n_days=500)
+    shallow = deep.iloc[-120:].copy()
+    _sequential_ticker(monkeypatch, [shallow, deep])
+
+    ingest("TEST", days=120, stocks_dir=str(tmp_path))
+    dest = ingest("TEST", stocks_dir=str(tmp_path))
+
+    out = pd.read_parquet(dest)
+    assert len(out) == 500
+    assert "spliced" not in capsys.readouterr().out
+
+
 def test_ingest_unknown_symbol_raises(monkeypatch, tmp_path):
     class _EmptyTicker:
         def __init__(self, symbol):

@@ -26,6 +26,12 @@ _OHLCV_COLS = ["high", "low", "close", "volume"]
 _MIN_MODEL_DAYS = 455  # 365-day window + ~90 calendar days of rolling-feature warmup
 _STALE_DAYS = 5
 
+#: Default fetch depth (~26 years). Deep by default because ``auto_adjust``
+#: rescales the WHOLE history on every dividend/split: a full re-fetch keeps
+#: the stored frame internally consistent, and it is the same single Yahoo
+#: request as a shallow one. Keep in sync with the ``ophir ingest`` CLI default.
+DEEP_DAYS = 9500
+
 
 def _norm_symbol(symbol: str) -> str:
     """Normalize a ticker to Yahoo form: upper/stripped, '.' -> '-' (BRK.B -> BRK-B)."""
@@ -79,15 +85,39 @@ def _quality_warnings(df: pd.DataFrame, days: int) -> list[str]:
 
 
 def _persist(df: pd.DataFrame, symbol: str, override: str | None) -> Path:
-    """Write ``df`` to ``symbol=<SYMBOL>/data.parquet`` in the Hive layout."""
-    out = df.reset_index()[["utc_time", *_OHLCV_COLS]]
+    """Write ``df`` to ``symbol=<SYMBOL>/data.parquet``, never shrinking history.
+
+    Invariant: a persist may not lose stored rows. A fetch reaching at least as
+    far back as the stored frame replaces it wholesale (an ``auto_adjust``
+    re-fetch is internally consistent). A shallower fetch is spliced onto the
+    stored rows that precede it — new rows win on overlapping dates — so a
+    short explicit refresh can never truncate deep history. The splice can
+    leave an adjustment seam if a split/dividend occurred since the stored
+    rows were fetched; a default (deep) ingest heals it.
+    """
     dest = parquet_path(symbol, override=override)
+    if dest.exists():
+        try:
+            existing = pd.read_parquet(dest).set_index("utc_time").sort_index()
+        except Exception as exc:  # unreadable store: replace it, but say so
+            print(f"[ingest] {symbol}: WARNING existing parquet unreadable ({exc}); overwriting")
+            existing = pd.DataFrame()
+        if len(existing) and existing.index.min() < df.index.min():
+            head = existing.loc[existing.index < df.index.min(), _OHLCV_COLS]
+            print(
+                f"[ingest] {symbol}: WARNING shallow refresh (from {df.index.min().date()}) "
+                f"spliced onto stored history (from {existing.index.min().date()}); rows "
+                "before the splice keep their old adjustment basis -- a default deep "
+                "ingest heals any seam"
+            )
+            df = pd.concat([head, df[_OHLCV_COLS]]).sort_index()
+    out = df.reset_index()[["utc_time", *_OHLCV_COLS]]
     dest.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(dest, index=False)
     return dest
 
 
-def ingest(symbol: str, days: int = 730, *, stocks_dir: str | None = None) -> Path:
+def ingest(symbol: str, days: int = DEEP_DAYS, *, stocks_dir: str | None = None) -> Path:
     """Ingest one ticker's daily OHLC into a model-ready parquet.
 
     Parameters
@@ -95,8 +125,10 @@ def ingest(symbol: str, days: int = 730, *, stocks_dir: str | None = None) -> Pa
     symbol : str
         Ticker symbol (case-insensitive).
     days : int, optional
-        Calendar days of history to fetch. Defaults to ``730`` (~2 years) --
-        enough for the model's 365-day window plus rolling-feature warmup.
+        Calendar days of history to fetch. Defaults to :data:`DEEP_DAYS`
+        (~26 years) so every refresh keeps the full training history
+        self-consistent; pass a smaller value only for a quick spot fetch
+        (``_persist`` splices it onto deeper stored history, never truncating).
     stocks_dir : str, optional
         Override for the parquet root. Defaults to ophir's
         ``<DATA_DIR>/days/stocks``.
@@ -174,7 +206,7 @@ def _download_chunk(symbols: list[str], days: int, max_retries: int) -> dict[str
 
 def ingest_many(
     symbols: list[str],
-    days: int = 730,
+    days: int = DEEP_DAYS,
     *,
     stocks_dir: str | None = None,
     chunk_size: int = 50,

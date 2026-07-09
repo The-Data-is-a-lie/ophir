@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ingest: `_persist` can no longer shrink a ticker's stored history — a
+  shallower fetch is spliced onto the deeper stored rows (new data wins on
+  overlap, with a seam warning), and the default fetch depth is now
+  `DEEP_DAYS = 9500` (~26 y) across `ingest`, `ingest_many`, and the CLI.
+  Previously the daily trading pass's 730-day refresh overwrote the whole
+  parquet, truncating the deep training history it shares.
 - Autoresearch loop: raised the trial train time-box from 600 s to 1500 s —
   the 600 s assumed the RTX 3090 machine's ~6-min 10k-step baseline; on the
   RTX 4080 SUPER with the full-depth store a baseline trial takes ~15 min,

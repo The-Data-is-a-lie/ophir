@@ -22,8 +22,9 @@ See [docs/data-inputs.md](docs/data-inputs.md) for the full data-source catalog.
   `auto_adjust=True` output is already split/dividend-adjusted, so ophir's separate
   split back-adjustment is intentionally skipped on this path.
 - Reuse these (do not re-fetch by hand):
-  - [agent/ingest.py:85](src/ophir/agent/ingest.py:85) — `ingest(symbol, days=730, *, stocks_dir=None)`: fetch + normalize + persist one ticker, returns the written `Path`.
-  - [agent/ingest.py:119](src/ophir/agent/ingest.py:119) — `ingest_many(symbols, days=730, *, stocks_dir=None)`: batch ingest, returns `{symbol: Path}`; a bad ticker is skipped, not fatal.
+  - [agent/ingest.py](src/ophir/agent/ingest.py) — `ingest(symbol, days=DEEP_DAYS, *, stocks_dir=None)`: fetch + normalize + persist one ticker, returns the written `Path`. `DEEP_DAYS = 9500` (~26 y) is the default so every refresh keeps the auto-adjusted history self-consistent.
+  - [agent/ingest.py](src/ophir/agent/ingest.py) — `ingest_many(symbols, days=DEEP_DAYS, *, stocks_dir=None)`: batch ingest, returns `{symbol: Path}`; a bad ticker is skipped, not fatal.
+  - **Never-truncate guard:** `_persist` splices a shallower fetch onto deeper stored history (new rows win on overlap, with a seam warning) — a persist can never shrink a ticker's stored history.
   - [agent/ingest.py:30](src/ophir/agent/ingest.py:30) — `_fetch_yahoo`; [agent/ingest.py:50](src/ophir/agent/ingest.py:50) — `_normalize`; [agent/ingest.py:61](src/ophir/agent/ingest.py:61) — `_quality_warnings`; [agent/ingest.py:76](src/ophir/agent/ingest.py:76) — `_persist` (internal helpers).
   - [agent/feed.py:49](src/ophir/agent/feed.py:49) — `load_daily_ohlcv(symbol, *, stocks_dir=None)`: read the parquet as a datetime-indexed frame.
   - [agent/feed.py:77](src/ophir/agent/feed.py:77) — `load_history(symbol, *, as_of=None, stocks_dir=None)`: same, trimmed to the last closed NYSE session (drops today's forming bar); raises on a stale feed.
