@@ -36,22 +36,32 @@ only changes with a real mechanism will clear ε.
   90-day objective dilutes it. That is WHY the metric is `rank_ic_near`.
 - Plain hyperparameter grid-walking is the Optuna sweep's job, not yours —
   only propose a hyperparameter change with a mechanistic rationale.
+- Session 2026-07-08 (4 trials, ε=0.0852, seed-0 baseline 0.145 — a high
+  draw of the seed distribution): ALL discarded.
+  - Near-horizon loss concentration (exponential half-life, ~37% of loss
+    mass on offsets 1–5) scored 0.084 — clearly WORSE than baseline. This
+    family has now failed twice; do not re-try loss re-weighting toward the
+    near band without a genuinely different mechanism.
+  - Volatility-standardization family — per-name Huber knee (0.122),
+    vol-normalized regression target (0.101), causal vol-normalized input
+    channels (0.115) — clustered below the baseline draw. Single-seed noise
+    is ±0.04, so read as "no evidence of gain", not proof of harm. The
+    vol-normalized target's h1=0.264 and the input-normalization's
+    h5=0.168 were the best sub-metrics seen; unconfirmed.
 
 ## Promising directions (highest leverage first)
 
-1. **Near-horizon loss shaping.** The loss's time-decay (`loss_decay`)
-   currently spreads weight across all 90 response days. Concentrate
-   training signal on offsets 1–5 (steeper decay, truncated weighting, or a
-   dedicated near-band loss term).
-2. **Rank the cross-section, don't regress it.** Add a pairwise/listwise
+1. **Rank the cross-section, don't regress it.** Add a pairwise/listwise
    ranking term on `r_close` within each day's cross-section — the decision
    is "long the top names", so ranking loss aligns training with use.
-3. **Response-block framing.** A shorter effective horizon (smaller
+   UNTRIED as of 2026-07-08 — start here.
+2. **Response-block framing.** A shorter effective horizon (smaller
    `RESPONSE_SIZE`, keeping eval offsets 1–5 intact) may stop far-horizon
    noise from dominating gradients.
-4. **Feature-side ideas** with strict causal lagging (e.g. volatility
-   normalization of returns before embedding).
-5. Architecture changes last — the evidence says the ceiling is framing,
+3. **Feature-side ideas** with strict causal lagging — but note the
+   vol-normalization family already showed no gain (see Known results);
+   prefer a different feature mechanism.
+4. Architecture changes last — the evidence says the ceiling is framing,
    not capacity.
 
 ## Measurement honesty (why some wins don't count)
