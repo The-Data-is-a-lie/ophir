@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Autoresearch: added `run_loop_awake.ps1`, a keep-awake launch wrapper
+  (`SetThreadExecutionState ES_CONTINUOUS|ES_SYSTEM|ES_DISPLAY`, mirroring the
+  OphirRebalance fix) — sessions s2/s3 died mid-GPU-training when the
+  machine's 30-min idle power transition tore down the console tree and
+  hard-aborted the torch/MKL training child. Unattended sessions must launch
+  through the wrapper.
 - Ingest: `_persist` can no longer shrink a ticker's stored history — a
   shallower fetch is spliced onto the deeper stored rows (new data wins on
   overlap, with a seam warning), and the default fetch depth is now
