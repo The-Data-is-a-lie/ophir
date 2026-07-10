@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Autoresearch loop: `run_iteration` now purges stale `best*.ckpt` /
+  `metrics.json` from reused seed directories before training — restarted
+  sessions could otherwise score a dead attempt's leftover checkpoint via the
+  alphabetical `ckpts[-1]` pick (contaminated rows are documented in
+  `autoresearch/records/s3-20260709-notes.md`).
+- Autoresearch loop: trial timeouts now kill the whole process tree
+  (`taskkill /T` on Windows) — `subprocess.run`'s own kill only reached the
+  `uv` shim, orphaning the GPU trainer and deadlocking the loop on the
+  inherited pipe.
 - Autoresearch: added `run_loop_awake.ps1`, a keep-awake launch wrapper
   (`SetThreadExecutionState ES_CONTINUOUS|ES_SYSTEM|ES_DISPLAY`, mirroring the
   OphirRebalance fix) — sessions s2/s3 died mid-GPU-training when the

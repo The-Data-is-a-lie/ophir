@@ -1,0 +1,9 @@
+iter	utc	hypothesis	status	rank_ic_near	h1	h5	wall_s	commit	seed_ics
+0	2026-07-09T07:38:44Z	baseline	keep	0.09635	0.10965	0.08492	2499	236cf8b	0.14535|0.06826|0.07544
+-1	2026-07-09T07:42:36Z	(recovered interrupted iteration)	runner-died	nan	nan	nan	nan	236cf8b	
+-1	2026-07-09T19:00:26Z	(recovered interrupted iteration)	runner-died	nan	nan	nan	nan	8252ed6	
+0	2026-07-09T19:43:54Z	baseline	keep	0.09289	0.09021	0.07301	2504	424b98a	0.14502|0.06837|0.06527
+1	2026-07-09T20:21:17Z	Zeroing the upside/downside auxiliary loss weights (0.5/0.5 -> 0.0/0.0) removes the two easily-learnable intraday-range heads that dominate the shared trunk's gradient, so the whole trunk's capacity serves the one channel rank_ic_near actually scores (r_close), raising near-horizon cross-sectional rank-IC.	discard	0.06329	0.10728	0.07531	2243	424b98a	-0.00288|0.09864|0.09411
+-1	2026-07-09T20:46:54Z	(recovered interrupted iteration)	runner-died	nan	nan	nan	nan	424b98a	
+0	2026-07-09T21:25:06Z	baseline	keep	0.09289	0.09021	0.07301	2293	424b98a	0.14502|0.06837|0.06527
+1	2026-07-09T22:10:53Z	Swapping a Polyak-EMA shadow of the weights (decay 0.9995, an effective ~2000-step averaging window — double the 0.999 variant that already scored 0.105) in for every validation loop and checkpoint save should raise rank_ic_near by averaging away more of the late-training SGD noise that drives the large 0.068-0.145 single-seed spread, while leaving training itself untouched.	discard	0.09597	0.12829	0.11841	2746	424b98a	0.09515|0.09864|0.09411

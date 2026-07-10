@@ -70,24 +70,33 @@ only changes with a real mechanism will clear ε.
   - Interrupted before training (queued, untested): ablate the upside/
     downside auxiliary heads (loss weights 1.0/0.5/0.5 → 1.0/0.0/0.0) so
     the full trunk serves the one channel the metric scores.
+- Session 2026-07-09 (s4, clean 3-seed run, ε=0.049): both directed trials
+  discarded. Baselines are STORE-VERSIONED: the deep watchlist re-ingest
+  moved the baseline 0.09635 → 0.09369 — only compare within a session.
+  - Aux-head ablation (upside/downside → 0): 0.102 — mildly above baseline,
+    inside noise. The aux heads neither poison the trunk nor matter much;
+    family closed. (An earlier −0.003 "crater" for this edit was a
+    stale-checkpoint artifact; see records/s3-20260709-notes.md.)
+  - Validation-EMA family closed: bias-corrected decay-0.9995 scored 0.091
+    ≈ baseline, and s2's decay-0.999 never beat its own baseline either.
+    Final-iterate noise is not the binding constraint at 10k steps.
 
 ## Promising directions (highest leverage first)
 
-1. **Variance reduction on the final iterate.** EMA-for-validation was the
-   best challenger (0.105 vs baseline 0.096) — extend that mechanism
-   (decay/window variants, or EMA combined with the queued aux-head
-   ablation), don't re-propose it verbatim.
-2. **Aux-head ablation (queued, untested).** Zero the upside/downside loss
-   weights so the trunk serves only `r_close` — interrupted before
-   training on 2026-07-09; still the top untested single edit.
-3. **Ranking the cross-section** — only with a materially stronger weight
-   or a listwise objective (0.01-weight RankNet already showed nothing).
-4. **Feature-side ideas** with strict causal lagging — but note the
+1. **Ranking the cross-section, seriously this time.** Only a token
+   0.01-weight pairwise RankNet has been tried. Propose a listwise
+   objective (e.g. ListNet/soft-rank on each day's cross-section) or a
+   pairwise term at a weight large enough to actually steer the gradient
+   (comparable to the regression term, not 1% of it).
+2. **Feature-side ideas** with strict causal lagging — but note the
    vol-normalization family already showed no gain (see Known results);
-   prefer a different feature mechanism.
-5. Architecture changes last — the evidence says the ceiling is framing,
+   prefer a different mechanism (e.g. cross-sectional de-meaning of
+   inputs per day, or regime/market-context features).
+3. Architecture changes last — the evidence says the ceiling is framing,
    not capacity. Do NOT touch `RESPONSE_SIZE` (train/eval geometry
-   mismatch; see Known results).
+   mismatch; see Known results). Closed families (do not re-propose):
+   near-horizon loss re-weighting, vol-standardization, validation-EMA,
+   aux-head ablation, light-weight pairwise ranking.
 
 ## Measurement honesty (why some wins don't count)
 
@@ -97,22 +106,6 @@ only changes with a real mechanism will clear ε.
 - A 10k-step win can be a proxy artifact; champions face more seeds and
   full-budget re-runs at graduation. Prefer changes with a mechanism, not
   a lucky number.
-
-## Session s4 directives (2026-07-09 — this session only; removed at curation)
-
-This is a directed 2-trial session. Follow this order exactly:
-
-1. **Iteration 1 — aux-head ablation, verbatim.** Set `upside_weight: 0.0`
-   and `downside_weight: 0.0` in `MODEL_KWARGS` (from 0.5/0.5). Nothing
-   else. Rationale: the two intraday-range heads are far more learnable
-   than forward returns and dominate the shared trunk's gradient, while
-   the metric scores only `r_close`.
-2. **Iteration 2 — one EMA-family extension.** NOT the decay-0.999
-   variant verbatim (already measured, 0.105). Pick ONE: a different
-   decay (e.g. 0.9995 or 0.998), starting the EMA after warmup, or EMA
-   layered on iteration 1's outcome (if kept, it is already in the file
-   you receive). One conceptual change; keep the swap-in/swap-out
-   pattern so training itself is untouched.
 
 ## When stuck
 
