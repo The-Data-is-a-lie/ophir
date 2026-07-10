@@ -125,9 +125,21 @@ def main() -> None:
         val_max_year=ACCEPT_VAL_MAX_YEAR,
         use_sp500=False,
     )
-    train_dl = build_dataloader(train_handler, RESPONSE_SIZE, BATCH_SIZE, NUM_WORKERS, CACHE_SIZE)
+    # persistent_workers: Windows respawns all dataloader workers every epoch
+    # (~18 restarts per 10k-step run) -- seconds of process-spawn each time.
+    # Changes streaming interleave, so baselines were re-established when
+    # this landed (no year literals allowed here; see the records dir).
+    train_dl = build_dataloader(
+        train_handler, RESPONSE_SIZE, BATCH_SIZE, NUM_WORKERS, CACHE_SIZE, persistent_workers=True
+    )
     val_dl = build_dataloader(
-        val_handler, RESPONSE_SIZE, BATCH_SIZE, NUM_WORKERS, CACHE_SIZE, return_identity=True
+        val_handler,
+        RESPONSE_SIZE,
+        BATCH_SIZE,
+        NUM_WORKERS,
+        CACHE_SIZE,
+        return_identity=True,
+        persistent_workers=True,
     )
 
     model = MODEL_CLASS(max_steps=args.max_steps, **MODEL_KWARGS)

@@ -268,6 +268,7 @@ def build_dataloader(
     num_workers: int,
     cache_size: int,
     return_identity: bool = False,
+    persistent_workers: bool = False,
 ) -> DataLoader[dict[str, Any]]:
     """Wrap a handler in a streaming, worker-sharded :class:`DataLoader`.
 
@@ -289,6 +290,12 @@ def build_dataloader(
         each batch also carries the opt-in eval identity (``stock_id`` /
         ``date_ordinal``). Defaults to ``False`` so the training path is
         unaffected (the default collate stacks the extra tensor fields).
+    persistent_workers : bool, optional
+        Keep worker processes alive across epochs instead of respawning them
+        (Windows process spawn costs seconds per worker, ~18 epoch restarts
+        per 10k-step run). Requires ``num_workers > 0``; changes streaming
+        interleave, so seeded runs are only comparable to runs with the same
+        setting. Defaults to ``False`` (the historical behavior).
 
     Returns
     -------
@@ -310,6 +317,7 @@ def build_dataloader(
         batch_size=batch_size,
         num_workers=num_workers,
         worker_init_fn=_seed_worker,
+        persistent_workers=persistent_workers and num_workers > 0,
     )
 
 
