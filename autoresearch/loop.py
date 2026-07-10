@@ -83,10 +83,12 @@ SEALED_IMPORT_LINE = (
 YEAR_LITERAL_RE = re.compile(r"\b20(19|2[0-9]|3[01])\b")
 
 #: Accept a trial only if the mean rank_ic_near over SEEDS > best + EPSILON.
-#: 2*SE of a 3-seed mean from the 2026-07-08 recalibration (single-seed std
-#: 0.0426 -> SE_mean 0.0246; see autoresearch/records/epsilon-recal-2026-07-08.md).
-#: Re-derive whenever SEEDS, MAX_STEPS, the eval panel, or the store changes.
-EPSILON = 0.049
+#: 2*SE of a 3-seed mean, re-derived 2026-07-10 after persistent_workers
+#: changed the streaming interleave (seed std 0.0282 -> SE_mean 0.0163; see
+#: autoresearch/records/epsilon-recal-2026-07-08.md, second amendment).
+#: Re-derive whenever SEEDS, MAX_STEPS, loader settings, the eval panel, or
+#: the store changes.
+EPSILON = 0.033
 
 #: Abort the session if the baseline metric falls outside this band — a
 #: baseline of -0.3 or +0.5 means the harness, not the model, is broken.
@@ -105,11 +107,11 @@ MAX_STEPS = 10000
 #: plausible per-edit effect. 3 seeds triples GPU cost per trial but shrinks
 #: the acceptance band by sqrt(3); keep EPSILON in sync when changing this.
 SEEDS: tuple[int, ...] = (0, 1, 2)
-#: How many seed trainings share the GPU at once. 1 = sequential (calibrated
-#: behavior). The 1.3M-param model leaves a single run at ~40% GPU
-#: utilization, so 3 is expected to fit 16 GB; it becomes the default only
-#: after a benchmark reproduces a sequential baseline bit-for-bit.
-CONCURRENT_SEEDS = 1
+#: How many seed trainings share the GPU at once. Validated 2026-07-10:
+#: with persistent dataloader workers, 3-way concurrency reproduced the
+#: sequential baseline bit-for-bit at 458 s vs 898 s for the 3-seed batch.
+#: Set 1 to fall back to the sequential (identically-scoring) behavior.
+CONCURRENT_SEEDS = 3
 PROPOSER_MODEL = "opus"
 MAX_CONSECUTIVE_PROPOSER_FAILS = 3
 

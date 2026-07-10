@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
   simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
   total-GPU-seconds batch deadline — the per-seed box under 3-way contention
-  killed healthy runs in the first benchmark).
+  killed healthy runs in the first benchmark). Default is now 3: with
+  persistent workers, concurrency reproduced the sequential baseline
+  bit-for-bit at 458 s vs 898 s for the 3-seed batch (5.3× total speedup
+  over the original ~2430 s); ε re-derived to 0.033 for the new interleave.
 
 ### Changed
 

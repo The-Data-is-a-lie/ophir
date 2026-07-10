@@ -47,3 +47,23 @@ effects).
 - Seed-count tradeoff on the RTX 4080 SUPER: ε ∝ 1/√n, wall-clock ∝ n —
   5 seeds would give ε ≈ 0.038 at ~77 min/trial (~6 trials/night vs ~9).
   Search stays at 3 seeds; reserve ≥5 seeds for graduating a champion.
+
+## Amendment (2026-07-10): persistent workers + concurrent seeds → ε = 0.033
+
+`persistent_workers=True` (commit `b545356`) changed the streaming interleave,
+so the operating point was re-measured (same store as s4, seed 0/1/2, 10k
+steps each):
+
+| seed | rank_ic_near |
+| ---- | ------------ |
+| 0    | 0.08437      |
+| 1    | 0.04411      |
+| 2    | 0.09843      |
+
+- mean = **0.07564**, std (ddof=1) = **0.02819** → SE of the 3-seed mean =
+  0.01628 → **ε = 2·SE = 0.033** (one 3-seed draw, same rigor as the
+  original derivation; re-derive if the operating point changes again).
+- Timing: sequential 3-seed batch **898 s** (was ~2430 s — worker respawn was
+  ~63% of “training” wall). Concurrent 3-way (`--concurrent-seeds 3`)
+  reproduced the same seeds **bit-for-bit at 458 s** → adopted as default.
+  A full trial is now ~10–13 min including the proposer (was ~45–50 min).

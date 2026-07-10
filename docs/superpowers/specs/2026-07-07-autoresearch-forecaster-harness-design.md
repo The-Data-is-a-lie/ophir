@@ -197,3 +197,16 @@ smoke + session `s1-20260708`):
   a trial `crash`. `results.tsv` gains a `seed_ics` column with the per-seed
   breakdown. Graduation still uses more seeds + full budget
   (see `autoresearch/records/epsilon-recal-2026-07-08.md`).
+
+### 2026-07-10 — persistent workers + concurrent seeds (5.3x faster trials)
+
+- Experiment dataloaders use `persistent_workers=True`: Windows respawned all
+  workers every ~550-step epoch (~18x per run), which was ~63% of training
+  wall-clock. Interleave changed -> baselines re-established, ε re-derived to
+  **0.033** (see the recal record, second amendment).
+- `--concurrent-seeds 3` (now the default) trains a trial''s seeds
+  simultaneously; validated bit-identical to sequential on the same store
+  (458 s vs 898 s for the 3-seed batch). The batch deadline is the trial''s
+  total GPU-second budget (n_seeds x per-seed box), not per-seed wall-clock.
+- Net: a 3-seed measurement costs ~458 s; a full trial ~10-13 min; an
+  8-trial session ~1.5-2 h (was 7-8 h).
