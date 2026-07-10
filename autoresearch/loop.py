@@ -778,10 +778,14 @@ def run_iteration(
         )
 
     if concurrent > 1:
+        # The fair budget is TOTAL GPU-seconds per trial (n_seeds x the
+        # per-seed box), not per-seed wall-clock: contention redistributes
+        # time between seeds, and the 2026-07-09 benchmark showed a shared
+        # 1500 s deadline kills healthy 3-way runs.
         rcs = runner_many(
             train_cmds,
             cwd=REPO_ROOT,
-            timeout=TRAIN_TIMEOUT_S,
+            timeout=TRAIN_TIMEOUT_S * len(train_cmds),
             log_paths=[os.path.join(d, "train.log") for d in seed_dirs],
         )
     else:

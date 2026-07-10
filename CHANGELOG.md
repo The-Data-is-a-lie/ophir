@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
+  simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
+  total-GPU-seconds batch deadline — the per-seed box under 3-way contention
+  killed healthy runs in the first benchmark).
+
+### Changed
+
+- Autoresearch experiment baseline: dataloaders use `persistent_workers=True`
+  (new `build_dataloader` kwarg) — Windows respawned every worker each epoch,
+  ~18 times per 10k-step run. Changes streaming interleave, so acceptance
+  baselines were re-established.
+
 ### Fixed
 
+- Tests: full `uv run pytest` is green on Windows again — added one narrowly
+  scoped `filterwarnings` ignore for torch's once-per-process flex-attention
+  eager-fallback `UserWarning` (no triton on CPU; order-dependent under
+  `filterwarnings = error`; harmless since eager math equals compiled math).
 - Autoresearch loop: `run_iteration` now purges stale `best*.ckpt` /
   `metrics.json` from reused seed directories before training — restarted
   sessions could otherwise score a dead attempt's leftover checkpoint via the

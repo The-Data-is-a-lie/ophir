@@ -477,7 +477,7 @@ class TestRunIteration:
         session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
         effects = _train_eval_effects(_same_metrics('{"rank_ic_near": 0.30}'))
-        captured: dict[str, list[list[str]] | list[str] | None] = {}
+        captured: dict[str, object] = {}
 
         def fake_many(
             cmds: list[list[str]],
@@ -488,6 +488,7 @@ class TestRunIteration:
         ) -> list[int]:
             captured["cmds"] = cmds
             captured["logs"] = log_paths
+            captured["timeout"] = timeout
             for cmd in cmds:  # materialize checkpoints like real training would
                 effects["train_experiment.py --max-steps"](cmd)
             return [0] * len(cmds)
@@ -511,6 +512,8 @@ class TestRunIteration:
         assert seeds == [str(s) for s in loop.SEEDS]  # all seeds in one batch
         logs = captured["logs"]
         assert logs is not None and all(log.endswith("train.log") for log in logs)
+        # budget = total GPU-seconds per trial, not per-seed wall under contention
+        assert captured["timeout"] == loop.TRAIN_TIMEOUT_S * len(loop.SEEDS)
         # trainings did NOT go through the sequential runner
         assert not runner.commands("train_experiment.py --max-steps")
         # evals still did, one per seed
