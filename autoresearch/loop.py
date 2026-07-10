@@ -105,12 +105,21 @@ MAX_STEPS = 10000
 #: plausible per-edit effect. 3 seeds triples GPU cost per trial but shrinks
 #: the acceptance band by sqrt(3); keep EPSILON in sync when changing this.
 SEEDS: tuple[int, ...] = (0, 1, 2)
+#: How many seed trainings share the GPU at once. 1 = sequential (calibrated
+#: behavior). The 1.3M-param model leaves a single run at ~40% GPU
+#: utilization, so 3 is expected to fit 16 GB; it becomes the default only
+#: after a benchmark reproduces a sequential baseline bit-for-bit.
+CONCURRENT_SEEDS = 1
 PROPOSER_MODEL = "opus"
 MAX_CONSECUTIVE_PROPOSER_FAILS = 3
 
 #: A subprocess runner: (cmd, cwd=..., timeout=..., input_text=...) ->
 #: (returncode, merged output). Injectable so tests never spawn processes.
 Runner = Callable[..., tuple[int, str]]
+
+#: A concurrent batch runner for seed trainings: (cmds, cwd=..., timeout=...,
+#: log_paths=...) -> one exit code per command. Injectable like Runner.
+RunnerMany = Callable[..., list[int]]
 
 RESULTS_HEADER = "\t".join(
     (
@@ -476,19 +485,62 @@ def run(
     try:
         out, _err = proc.communicate(input=input_text, timeout=timeout)
     except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                capture_output=True,
-                check=False,
-            )
-        else:
-            proc.kill()
+        _kill_tree(proc)
         # Drain so the dead tree's pipes close; never block the loop again.
         with contextlib.suppress(subprocess.TimeoutExpired, OSError):
             proc.communicate(timeout=30)
         return (-1, "TIMEOUT")
     return (proc.returncode, out or "")
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    """Terminate ``proc`` and every descendant (``taskkill /T`` on Windows)."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        proc.kill()
+
+
+def run_many(
+    cmds: list[list[str]],
+    *,
+    cwd: str,
+    timeout: float | None = None,
+    log_paths: list[str] | None = None,
+) -> list[int]:
+    """Run ``cmds`` concurrently; return one exit code per command (-1 = timeout).
+
+    Used to train independent seeds in parallel on one GPU. Output goes to
+    ``log_paths`` files (not pipes: reading several live pipes sequentially
+    deadlocks once one fills). Each process shares one wall-clock deadline;
+    an overrun gets the same tree-kill semantics as :func:`run`.
+    """
+    logs = log_paths or [os.devnull] * len(cmds)
+    procs: list[subprocess.Popen[str]] = []
+    handles = []
+    for cmd, log in zip(cmds, logs, strict=True):
+        fh = open(log, "w", encoding="utf-8")  # noqa: SIM115 - lifetime spans the wait loop
+        handles.append(fh)
+        procs.append(subprocess.Popen(cmd, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, text=True))
+    deadline = None if timeout is None else time.monotonic() + timeout
+    rcs: list[int] = []
+    for proc in procs:
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            proc.wait(timeout=remaining)
+            rcs.append(proc.returncode)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                proc.wait(timeout=30)
+            rcs.append(-1)
+    for fh in handles:
+        fh.close()
+    return rcs
 
 
 def pin_hashes(
@@ -630,6 +682,8 @@ def run_iteration(
     propose: bool,
     epsilon: float,
     runner: Runner = run,
+    concurrent: int = 1,
+    runner_many: RunnerMany = run_many,
 ) -> IterationResult:
     """Run one propose → commit → per-seed train/score → decide-on-mean cycle."""
     start = time.monotonic()
@@ -691,8 +745,10 @@ def run_iteration(
 
     # One train + eval per seed; any seed failure wastes the whole trial. The
     # decision metric is the MEAN over seeds (single-seed noise is ~2x any
-    # plausible per-edit effect; see EPSILON).
-    per_seed: list[dict[str, float]] = []
+    # plausible per-edit effect; see EPSILON). Seeds are independent, so with
+    # ``concurrent > 1`` the trainings share the GPU simultaneously.
+    seed_dirs: list[str] = []
+    train_cmds: list[list[str]] = []
     for seed in SEEDS:
         seed_dir = os.path.join(iter_dir, f"seed-{seed}")
         os.makedirs(seed_dir, exist_ok=True)
@@ -705,7 +761,8 @@ def run_iteration(
         stale_metrics = os.path.join(seed_dir, "metrics.json")
         if os.path.exists(stale_metrics):
             os.remove(stale_metrics)
-        rc, _out = runner(
+        seed_dirs.append(seed_dir)
+        train_cmds.append(
             [
                 "uv",
                 "run",
@@ -717,16 +774,41 @@ def run_iteration(
                 str(seed),
                 "--out-dir",
                 seed_dir,
-            ],
+            ]
+        )
+
+    if concurrent > 1:
+        rcs = runner_many(
+            train_cmds,
             cwd=REPO_ROOT,
             timeout=TRAIN_TIMEOUT_S,
+            log_paths=[os.path.join(d, "train.log") for d in seed_dirs],
         )
+    else:
+        rcs = []
+        for cmd in train_cmds:
+            rc, _out = runner(cmd, cwd=REPO_ROOT, timeout=TRAIN_TIMEOUT_S)
+            rcs.append(rc)
+            if rc != 0:  # don't burn GPU on the remaining seeds of a dead trial
+                break
+
+    seed_ckpts: list[str] = []
+    # strict=False: the sequential path breaks early on a failed train, so
+    # ``rcs`` may be shorter than ``seed_dirs``; the length guard below covers it.
+    for seed_dir, rc in zip(seed_dirs, rcs, strict=False):
         ckpts = sorted(glob.glob(os.path.join(seed_dir, "best*.ckpt")))
         if rc != 0 or not ckpts:
             if propose:
                 _revert(runner, base_sha)
             return _done("crash", None, None, None)
+        seed_ckpts.append(ckpts[-1])
+    if len(seed_ckpts) < len(SEEDS):  # sequential early-break left seeds untrained
+        if propose:
+            _revert(runner, base_sha)
+        return _done("crash", None, None, None)
 
+    per_seed: list[dict[str, float]] = []
+    for seed_dir, ckpt in zip(seed_dirs, seed_ckpts, strict=True):
         metrics_path = os.path.join(seed_dir, "metrics.json")
         rc, _out = runner(
             [
@@ -735,7 +817,7 @@ def run_iteration(
                 "python",
                 os.path.join(HARNESS_DIR, "eval_harness.py"),
                 "--ckpt",
-                ckpts[-1],
+                ckpt,
                 "--out",
                 metrics_path,
             ],
@@ -828,6 +910,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-iters", type=int, default=2)
     parser.add_argument("--max-wall-clock-s", type=int, default=28800)
     parser.add_argument("--epsilon", type=float, default=EPSILON)
+    parser.add_argument("--concurrent-seeds", type=int, default=CONCURRENT_SEEDS)
     args = parser.parse_args(argv)
 
     global HOOKS_PATH
@@ -880,7 +963,13 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(base_sha)
         try:
             result = run_iteration(
-                i, session_dir, best_ic, base_sha, propose=(i > 0), epsilon=args.epsilon
+                i,
+                session_dir,
+                best_ic,
+                base_sha,
+                propose=(i > 0),
+                epsilon=args.epsilon,
+                concurrent=args.concurrent_seeds,
             )
         except KeyboardInterrupt:
             print("Interrupted; reverting to the iteration anchor.")

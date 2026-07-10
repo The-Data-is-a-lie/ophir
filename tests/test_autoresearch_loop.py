@@ -473,6 +473,80 @@ class TestRunIteration:
         scored = [c[c.index("--ckpt") + 1] for c in runner.commands("eval_harness.py")]
         assert scored and all("9999" not in p for p in scored)
 
+    def test_concurrent_seeds_train_via_runner_many(self, tmp_path, monkeypatch) -> None:
+        session_dir = _make_session(tmp_path)
+        _experiment_file_ok(monkeypatch, tmp_path)
+        effects = _train_eval_effects(_same_metrics('{"rank_ic_near": 0.30}'))
+        captured: dict[str, list[list[str]] | list[str] | None] = {}
+
+        def fake_many(
+            cmds: list[list[str]],
+            *,
+            cwd: str,
+            timeout: float | None = None,
+            log_paths: list[str] | None = None,
+        ) -> list[int]:
+            captured["cmds"] = cmds
+            captured["logs"] = log_paths
+            for cmd in cmds:  # materialize checkpoints like real training would
+                effects["train_experiment.py --max-steps"](cmd)
+            return [0] * len(cmds)
+
+        runner = self._propose_runner(effects)
+        result = loop.run_iteration(
+            1,
+            session_dir,
+            None,
+            BASE_SHA,
+            propose=True,
+            epsilon=0.02,
+            runner=runner,
+            concurrent=3,
+            runner_many=fake_many,
+        )
+        assert result.status == "keep"
+        cmds = captured["cmds"]
+        assert cmds is not None
+        seeds = [c[c.index("--seed") + 1] for c in cmds]
+        assert seeds == [str(s) for s in loop.SEEDS]  # all seeds in one batch
+        logs = captured["logs"]
+        assert logs is not None and all(log.endswith("train.log") for log in logs)
+        # trainings did NOT go through the sequential runner
+        assert not runner.commands("train_experiment.py --max-steps")
+        # evals still did, one per seed
+        assert len(runner.commands("eval_harness.py")) == len(loop.SEEDS)
+
+    def test_concurrent_seed_timeout_is_crash(self, tmp_path, monkeypatch) -> None:
+        session_dir = _make_session(tmp_path)
+        _experiment_file_ok(monkeypatch, tmp_path)
+        effects = _train_eval_effects(_same_metrics('{"rank_ic_near": 0.30}'))
+
+        def fake_many(
+            cmds: list[list[str]],
+            *,
+            cwd: str,
+            timeout: float | None = None,
+            log_paths: list[str] | None = None,
+        ) -> list[int]:
+            for cmd in cmds:
+                effects["train_experiment.py --max-steps"](cmd)
+            return [0, -1, 0]  # middle seed timed out
+
+        runner = self._propose_runner(effects)
+        result = loop.run_iteration(
+            1,
+            session_dir,
+            None,
+            BASE_SHA,
+            propose=True,
+            epsilon=0.02,
+            runner=runner,
+            concurrent=3,
+            runner_many=fake_many,
+        )
+        assert result.status == "crash"
+        assert runner.commands("reset --hard")
+
     def test_invalid_diff_never_trains(self, tmp_path, monkeypatch) -> None:
         session_dir = _make_session(tmp_path)
         _experiment_file_ok(monkeypatch, tmp_path)
