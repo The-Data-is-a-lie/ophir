@@ -134,4 +134,9 @@ filterwarnings = [
     "default::DeprecationWarning",
     "default::PendingDeprecationWarning",
     "default::FutureWarning",
+    # torch's flex-attention warns once per process when its compiled path
+    # falls back to eager on CPU (no triton on Windows); order-dependent in
+    # the full suite, harmless (eager math == compiled math). Narrow by
+    # message on purpose -- do not broaden.
+    "ignore:flex_attention called without torch\\.compile:UserWarning",
 ]
