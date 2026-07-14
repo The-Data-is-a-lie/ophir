@@ -703,6 +703,8 @@ def evaluate(
     watchlist: str | None = None,
     residual_benchmark: str | None = None,
     beta_window: int = 120,
+    clean_rows: bool = False,
+    max_abs_r_close: float = 0.75,
     val_batches: int = 50,
     strict: bool = False,
     finetuned: bool = False,
@@ -746,6 +748,12 @@ def evaluate(
         :func:`ophir.train.build_split_handlers`.
     beta_window : int, optional
         Trailing beta window (trading days) for the residual. Defaults to ``120``.
+    clean_rows : bool, optional
+        Drop return-spike (and zero-volume) rows before windowing — useful to
+        damp continuous-futures roll/limit/event outliers. Defaults to ``False``.
+    max_abs_r_close : float, optional
+        Return-spike threshold used when ``clean_rows`` is set. Defaults to
+        ``0.75``.
     val_batches : int
         Maximum number of validation batches to score. Defaults to ``50``.
     strict : bool
@@ -773,6 +781,8 @@ def evaluate(
         symbols=symbols,
         residual_benchmark=residual_benchmark,
         beta_window=beta_window,
+        clean_rows=clean_rows,
+        max_abs_r_close=max_abs_r_close,
     )
     val_dl = build_dataloader(
         val_handler,

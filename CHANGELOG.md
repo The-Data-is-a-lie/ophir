@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetch keeps its `=`), enabling single-commodity futures in the store. Adds
   `universes/commodities_futures.txt` (26 distinct commodity futures) — a genuine
   distinct cross-section where the `@universe`-residual rank-IC is materially
-  stronger than the collinear-capped ETF universe.
+  stronger than the collinear-capped ETF universe. `ophir evaluate` also gained
+  `--clean-rows` / `--max-abs-r-close` outlier-damping passthroughs (note: not for
+  the residual path — row-dropping desynchronizes the daily cross-section).
 - Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
   simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
   total-GPU-seconds batch deadline — the per-seed box under 3-way contention
