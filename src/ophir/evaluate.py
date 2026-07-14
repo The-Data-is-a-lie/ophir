@@ -701,6 +701,8 @@ def evaluate(
     data_dir: str | None = None,
     use_sp500: bool = False,
     watchlist: str | None = None,
+    residual_benchmark: str | None = None,
+    beta_window: int = 120,
     val_batches: int = 50,
     strict: bool = False,
     finetuned: bool = False,
@@ -737,6 +739,13 @@ def evaluate(
         cross-section is restricted to those tickers (blank lines and ``#``
         comments ignored). Composes with ``use_sp500`` as an intersection.
         Defaults to ``None``.
+    residual_benchmark : str or None, optional
+        Score rank-IC against the beta-residualized r_close target instead of the
+        raw one: a benchmark ticker (excluded from the scored set) or
+        ``"@universe"``. Defaults to ``None`` (raw target). See
+        :func:`ophir.train.build_split_handlers`.
+    beta_window : int, optional
+        Trailing beta window (trading days) for the residual. Defaults to ``120``.
     val_batches : int
         Maximum number of validation batches to score. Defaults to ``50``.
     strict : bool
@@ -762,6 +771,8 @@ def evaluate(
         val_max_year=val_max_year,
         use_sp500=use_sp500,
         symbols=symbols,
+        residual_benchmark=residual_benchmark,
+        beta_window=beta_window,
     )
     val_dl = build_dataloader(
         val_handler,

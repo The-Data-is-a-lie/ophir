@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignored), via a new `symbols` filter on `build_split_handlers` — enabling a
   commodity-ETF baseline (the current model's rank-IC on commodities) without
   touching the store or the S&P 500 path.
+- Beta-residualized r_close target (beta -> alpha): `--residual-benchmark` (a
+  ticker like `DBC`/`SPY`, excluded from the scored set, or `@universe` for the
+  scored universe's equal-weight factor) + `--beta-window` on `ophir evaluate` /
+  `train` / `finetune`. Replaces the r_close TARGET with
+  `r_close - beta * benchmark` (trailing, look-ahead-safe beta) so rank-IC
+  measures residual selection skill instead of market/sector beta; inputs stay
+  raw and `FEATURE_DIM` is unchanged (new `ophir.ticker.residual`).
 - Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
   simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
   total-GPU-seconds batch deadline — the per-seed box under 3-way contention

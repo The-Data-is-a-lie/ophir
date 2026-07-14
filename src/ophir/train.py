@@ -24,6 +24,7 @@ import os
 import random
 from typing import TYPE_CHECKING, Any
 
+import pandas as pd  # type: ignore[import-untyped]
 import typer
 
 if TYPE_CHECKING:
@@ -64,6 +65,62 @@ def _validate_dims(emb_dim: int, num_heads: int, seq_len: int, response_size: in
         raise typer.BadParameter(f"response_size must be in 1..{seq_len - 1}, got {response_size}")
 
 
+def _load_residual_benchmark(spec: str, *, base_path: str, universe: list[str] | None) -> pd.Series:
+    """Build the daily benchmark log-return series for residualizing r_close.
+
+    ``spec`` is either a ticker symbol (the benchmark's own daily log returns,
+    read from the same parquet root) or ``"@universe"`` (the equal-weight mean of
+    the scored ``universe``'s daily log returns). Indexed by normalized calendar
+    date so it aligns with the feature frame.
+
+    Parameters
+    ----------
+    spec : str
+        A ticker symbol (e.g. ``"DBC"``) or the literal ``"@universe"``.
+    base_path : str
+        The per-symbol parquet root (``.../stocks``).
+    universe : list[str] or None
+        The scored symbols; required for ``"@universe"``.
+
+    Returns
+    -------
+    pandas.Series
+        Daily benchmark log-returns, date-indexed.
+    """
+    import numpy as np
+
+    def _log_ret(sym: str) -> pd.Series:
+        path = os.path.join(base_path, f"symbol={sym.upper()}", "data.parquet")
+        frame = pd.read_parquet(path)
+        frame["utc_time"] = pd.to_datetime(frame["utc_time"])
+        close = frame.set_index("utc_time").sort_index()["close"]
+        close.index = close.index.normalize()
+        close = close[~close.index.duplicated(keep="last")]
+        return np.log(close).diff().rename(sym.upper())
+
+    if spec.startswith("@"):
+        if spec != "@universe":
+            raise typer.BadParameter(
+                f"unknown residual factor {spec!r}; only '@universe' is supported"
+            )
+        if not universe:
+            raise typer.BadParameter(
+                "'@universe' residual needs an explicit --watchlist or --use-sp500"
+            )
+        rets: list[pd.Series] = []
+        for sym in universe:
+            try:
+                rets.append(_log_ret(sym))
+            except (FileNotFoundError, OSError):
+                continue
+        if not rets:
+            raise typer.BadParameter(
+                "no universe symbols could be loaded for the '@universe' residual"
+            )
+        return pd.concat(rets, axis=1).mean(axis=1)
+    return _log_ret(spec)
+
+
 def build_split_handlers(
     *,
     base_path: str,
@@ -79,6 +136,8 @@ def build_split_handlers(
     use_quality_allowlist: bool = False,
     clean_rows: bool = False,
     max_abs_r_close: float = 0.75,
+    residual_benchmark: str | None = None,
+    beta_window: int = 120,
 ) -> tuple[StockHandler, StockHandler]:
     """Build disjoint train/val handlers separated by an embargo gap.
 
@@ -118,6 +177,13 @@ def build_split_handlers(
     max_abs_r_close : float, optional
         Return-spike threshold forwarded to the handlers when ``clean_rows`` is
         set. Defaults to ``0.75``.
+    residual_benchmark : str or None, optional
+        If set, residualize the r_close TARGET against a benchmark: a ticker
+        symbol (e.g. ``"DBC"`` / ``"SPY"``, excluded from the scored universe) or
+        ``"@universe"`` for the scored universe's equal-weight mean return.
+        Defaults to ``None`` (raw absolute target).
+    beta_window : int, optional
+        Trailing beta window (trading days) for the residual. Defaults to ``120``.
 
     Returns
     -------
@@ -146,6 +212,21 @@ def build_split_handlers(
         sp500_symbols = get_sp_500_symbols()
         splits = get_splits(sp500_symbols)
 
+    benchmark_returns: pd.Series | None = None
+    if residual_benchmark is not None:
+        scored = symbols if symbols is not None else sp500_symbols
+        benchmark_returns = _load_residual_benchmark(
+            residual_benchmark, base_path=base_path, universe=scored
+        )
+        # A concrete benchmark ticker is loaded for residualization only, never
+        # scored against itself; drop it from the kept universe(s).
+        if not residual_benchmark.startswith("@"):
+            bench_sym = residual_benchmark.upper()
+            if symbols is not None:
+                symbols = [s for s in symbols if s != bench_sym]
+            if sp500_symbols is not None:
+                sp500_symbols = [s for s in sp500_symbols if s != bench_sym]
+
     def _handler(min_year: int | None, max_year: int | None) -> StockHandler:
         handler = StockHandler(
             seq_len=seq_len,
@@ -161,6 +242,8 @@ def build_split_handlers(
             max_abs_r_close=max_abs_r_close,
             shuffle=True,
             cache_frames=True,
+            benchmark_returns=benchmark_returns,
+            beta_window=beta_window,
         )
         if sp500_symbols is not None:
             handler.keep_stocks(sp500_symbols)
@@ -370,6 +453,8 @@ def run_training(
     log_offset_ic: bool = False,
     decouple_rezero_schedule: bool = False,
     val_identity: bool = False,
+    residual_benchmark: str | None = None,
+    beta_window: int = 120,
     callbacks: list[Any] | None = None,
     seed: int | None = None,
 ) -> LightningOHLCPredictor:
@@ -408,6 +493,8 @@ def run_training(
         use_quality_allowlist=use_quality_allowlist,
         clean_rows=clean_rows,
         max_abs_r_close=max_abs_r_close,
+        residual_benchmark=residual_benchmark,
+        beta_window=beta_window,
     )
 
     if max_steps is None:
@@ -515,6 +602,8 @@ def train(
     log_offset_ic: bool = False,
     decouple_rezero_schedule: bool = False,
     val_identity: bool = False,
+    residual_benchmark: str | None = None,
+    beta_window: int = 120,
     seed: int | None = None,
 ) -> None:
     """Pre-train a base :class:`LightningOHLCPredictor` from scratch.
@@ -563,6 +652,8 @@ def train(
         log_offset_ic=log_offset_ic,
         decouple_rezero_schedule=decouple_rezero_schedule,
         val_identity=val_identity,
+        residual_benchmark=residual_benchmark,
+        beta_window=beta_window,
         seed=seed,
     )
 
@@ -586,6 +677,8 @@ def finetune(
     max_abs_r_close: float = 0.75,
     strict: bool = False,
     time_version: bool = True,
+    residual_benchmark: str | None = None,
+    beta_window: int = 120,
 ) -> None:
     """Resume from the latest base checkpoint and finetune.
 
@@ -621,6 +714,12 @@ def finetune(
         checkpoints may predate the ``mask_token``).
     time_version : bool
         Load the time-interval checkpoint rather than the best-epoch one.
+    residual_benchmark : str or None
+        Residualize the r_close target against this benchmark (a ticker symbol or
+        ``"@universe"``); ``None`` keeps the raw target. See
+        :func:`build_split_handlers`.
+    beta_window : int
+        Trailing beta window (trading days) for the residual. Defaults to ``120``.
     """
     from ophir import register
 
@@ -643,6 +742,8 @@ def finetune(
         use_quality_allowlist=use_quality_allowlist,
         clean_rows=clean_rows,
         max_abs_r_close=max_abs_r_close,
+        residual_benchmark=residual_benchmark,
+        beta_window=beta_window,
     )
     train_dl = build_dataloader(train_handler, response_size, batch_size, num_workers, cache_size)
     val_dl = build_dataloader(val_handler, response_size, batch_size, num_workers, cache_size)

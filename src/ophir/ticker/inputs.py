@@ -17,6 +17,12 @@ if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
 
+# Columns that are TARGET-only: present in the window frame so they can feed the
+# loss, but excluded from the feature sweep below (keeps FEATURE_DIM stable and
+# prevents target leakage into the model's inputs).
+_TARGET_ONLY_COLS = frozenset({"r_close_resid"})
+
+
 def extract_model_data(
     df: pd.DataFrame,
     response_size: int | np.ndarray[Any, Any],
@@ -50,9 +56,16 @@ def extract_model_data(
         ``stock_id`` / ``date_ordinal`` when ``stock_id`` is given), suitable
         for :class:`~ophir.model_data.OHLCMultiClassPredictorInput`.
     """
-    features = [c for c, d in zip(df.columns, df.dtypes, strict=False) if d != np.dtype(bool)]
+    features = [
+        c
+        for c, d in zip(df.columns, df.dtypes, strict=False)
+        if d != np.dtype(bool) and c not in _TARGET_ONLY_COLS
+    ]
     feature_input = df[features].to_numpy()
-    targets = df[["r_close", "upside", "downside"]].to_numpy()
+    # When a residualized target column is present it replaces the r_close TARGET
+    # channel only; the raw r_close stays in ``feature_input``.
+    close_col = "r_close_resid" if "r_close_resid" in df.columns else "r_close"
+    targets = df[[close_col, "upside", "downside"]].to_numpy()
     trade_occured = df["trade_occured"].to_numpy()
     model_data: dict[str, Any] = {
         "feature_input": torch.from_numpy(feature_input).float(),

@@ -61,6 +61,12 @@ class StockHandler:
         source. The cached frame is only ever read downstream (split-adjustment
         and feature extraction return new frames), so this is output-identical.
         Defaults to ``False``.
+    benchmark_returns : pandas.Series, optional
+        Daily benchmark log-returns forwarded to each produced streamer to
+        residualize the r_close target. Defaults to ``None`` (no residualization).
+    beta_window : int, optional
+        Trailing beta window (trading days) forwarded to each streamer.
+        Defaults to ``120``.
     """
 
     seq_len: int
@@ -78,6 +84,8 @@ class StockHandler:
     max_abs_r_close: float = 0.75
     source: Literal["parquet", "sqlite"] = "parquet"
     cache_frames: bool = False
+    benchmark_returns: pd.Series | None = None
+    beta_window: int = 120
     stocks: list[str] = field(init=False)
     stock_dict: dict[str, str] = field(init=False)
     _frame_cache: dict[str, pd.DataFrame] = field(init=False)
@@ -231,4 +239,6 @@ class StockHandler:
             shuffle=self.shuffle,
             stock_split=stock_split,
             symbol=stock,
+            benchmark_returns=self.benchmark_returns,
+            beta_window=self.beta_window,
         )

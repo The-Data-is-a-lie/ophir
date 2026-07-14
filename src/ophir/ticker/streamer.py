@@ -40,6 +40,14 @@ class StockStreamer:
     symbol : str, optional
         The ticker symbol this streamer was built for; carried for the opt-in
         eval identity path. Defaults to ``None``.
+    benchmark_returns : pandas.Series, optional
+        Daily benchmark log-returns (date-indexed). When given, the r_close
+        TARGET is replaced by its trailing-beta residual
+        (``r_close - beta * benchmark``); inputs stay raw. Defaults to ``None``
+        (no residualization).
+    beta_window : int, optional
+        Trailing window (trading days) for the look-ahead-safe beta estimate.
+        Defaults to ``120``.
     """
 
     ohlc_df: pd.DataFrame
@@ -48,6 +56,8 @@ class StockStreamer:
     stock_split: StockSplit | None = None
     shuffle: bool = False
     symbol: str | None = None
+    benchmark_returns: pd.Series | None = None
+    beta_window: int = 120
 
     def __post_init__(self) -> None:
         if len(self.ohlc_df) < 1:
@@ -61,10 +71,35 @@ class StockStreamer:
         self.preprocessed_ohlc_df = extract_features(self.ohlc_df)
         if self.offset == -1:
             self.offset = self.seq_len
+        if self.benchmark_returns is not None:
+            self._apply_residual_target()
 
         first_valid = int(self.preprocessed_ohlc_df["feature_valid"].to_numpy().argmax())
         self.starts = get_starts(self.preprocessed_ohlc_df, self.seq_len, self.offset, first_valid)
         self.iterator = iter(self.create_iterator())
+
+    def _apply_residual_target(self) -> None:
+        """Replace the r_close TARGET with its trailing-beta residual.
+
+        Computes ``r_close - beta * benchmark`` on the stock's real (non-padded)
+        trading days and stores it as an ``r_close_resid`` column, which
+        :func:`~ophir.ticker.inputs.extract_model_data` folds into the target's
+        r_close channel while excluding it from the feature sweep (inputs stay
+        raw). Rows whose trailing beta is undefined (the warm-up) are marked not
+        ``feature_valid`` so window starts skip them and no target uses an
+        ex-ante-undefined beta.
+        """
+        from ophir.ticker.residual import residualize_r_close
+
+        assert self.benchmark_returns is not None
+        df = self.preprocessed_ohlc_df
+        real = df["trade_occured"].to_numpy()
+        resid = residualize_r_close(
+            df.loc[real, "r_close"], self.benchmark_returns, self.beta_window
+        ).reindex(df.index)
+        defined = resid.notna().to_numpy()
+        df["feature_valid"] = df["feature_valid"].to_numpy() & defined
+        df["r_close_resid"] = resid.fillna(df["r_close"]).to_numpy()
 
     @property
     def size(self) -> int:
