@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `r_close - beta * benchmark` (trailing, look-ahead-safe beta) so rank-IC
   measures residual selection skill instead of market/sector beta; inputs stay
   raw and `FEATURE_DIM` is unchanged (new `ophir.ticker.residual`).
+- Continuous-futures ingestion: `ophir ingest CL=F` now stores partition-safe as
+  `symbol=CL_F` (new `_store_symbol` maps the Hive-key `=` -> `_`; the Yahoo
+  fetch keeps its `=`), enabling single-commodity futures in the store. Adds
+  `universes/commodities_futures.txt` (26 distinct commodity futures) — a genuine
+  distinct cross-section where the `@universe`-residual rank-IC is materially
+  stronger than the collinear-capped ETF universe.
 - Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
   simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
   total-GPU-seconds batch deadline — the per-seed box under 3-way contention

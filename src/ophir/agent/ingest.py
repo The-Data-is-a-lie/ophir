@@ -3,7 +3,10 @@
 Pulls history for a ticker, normalizes it to the schema
 :func:`ophir.ticker.extract_features` consumes, runs non-fatal quality checks,
 and writes it to the Hive layout ``symbol=<SYMBOL>/data.parquet`` so the
-existing ``StockHandler`` / ``StockStreamer`` pipeline reads it unchanged.
+existing ``StockHandler`` / ``StockStreamer`` pipeline reads it unchanged. A
+``=`` in a Yahoo symbol (continuous futures like ``CL=F``) is mapped to ``_``
+for the on-disk partition (``symbol=CL_F``) so the ``split("=")`` partition
+parser stays unambiguous; the Yahoo *fetch* keeps the ``=``.
 
 Yahoo's ``auto_adjust=True`` output is already split/dividend-adjusted, so the
 separate split back-adjustment in :mod:`ophir.ticker` is intentionally skipped
@@ -36,6 +39,18 @@ DEEP_DAYS = 9500
 def _norm_symbol(symbol: str) -> str:
     """Normalize a ticker to Yahoo form: upper/stripped, '.' -> '-' (BRK.B -> BRK-B)."""
     return symbol.strip().upper().replace(".", "-")
+
+
+def _store_symbol(symbol: str) -> str:
+    """Partition-safe store symbol: sanitize the Hive-key separator ``=``.
+
+    The parquet store is a Hive layout (``symbol=<X>``) parsed by
+    ``path.split("=")[-1]``, so a Yahoo symbol containing ``=`` (the
+    continuous-futures ``CL=F``) would be mangled to ``F``. Map ``=`` -> ``_``
+    for the on-disk symbol (``CL=F`` -> ``CL_F``); the Yahoo *fetch* symbol keeps
+    its ``=``. Symbols without ``=`` are returned unchanged.
+    """
+    return symbol.replace("=", "_")
 
 
 def _fetch_yahoo(symbol: str, days: int) -> pd.DataFrame:
@@ -144,7 +159,7 @@ def ingest(symbol: str, days: int = DEEP_DAYS, *, stocks_dir: str | None = None)
         raise ValueError(f"No usable rows for {symbol!r} after normalization.")
     for warning in _quality_warnings(df, days):
         print(f"[ingest] {symbol}: WARNING {warning}")
-    dest = _persist(df, symbol, stocks_dir)
+    dest = _persist(df, _store_symbol(symbol), stocks_dir)
     print(
         f"[ingest] {symbol}: {len(df)} rows "
         f"{df.index.min().date()}..{df.index.max().date()} "
@@ -244,8 +259,9 @@ def ingest_many(
                     continue
                 for warning in _quality_warnings(df, days):
                     print(f"[ingest] {symbol}: WARNING {warning}")
-                dest = _persist(df, symbol, stocks_dir)
-                paths[symbol] = dest
+                store = _store_symbol(symbol)
+                dest = _persist(df, store, stocks_dir)
+                paths[store] = dest
                 print(
                     f"[ingest] {symbol}: {len(df)} rows "
                     f"{df.index.min().date()}..{df.index.max().date()} "
