@@ -75,6 +75,7 @@ def build_split_handlers(
     val_min_year: int,
     val_max_year: int | None,
     use_sp500: bool,
+    symbols: list[str] | None = None,
     use_quality_allowlist: bool = False,
     clean_rows: bool = False,
     max_abs_r_close: float = 0.75,
@@ -101,6 +102,12 @@ def build_split_handlers(
     use_sp500 : bool
         If ``True``, fetch the S&P 500 list (Wikipedia) and split history
         (Yahoo) and restrict both handlers to those symbols.
+    symbols : list[str] or None, optional
+        Explicit universe to restrict both handlers to, applied as an
+        intersection after ``use_sp500`` (so it composes with the other
+        filters). Use it to score a named cross-section — e.g. a commodity-ETF
+        list — without touching the store. ``None`` (default) applies no
+        explicit filter.
     use_quality_allowlist : bool, optional
         If ``True``, restrict both handlers to the curated allowlist written by
         ``ophir curate`` (see :func:`ophir.register.fetch_quality_symbols_list`).
@@ -133,11 +140,11 @@ def build_split_handlers(
             f"window; got a {gap}-year gap."
         )
 
-    symbols: list[str] | None = None
+    sp500_symbols: list[str] | None = None
     splits: dict[str, Any] | None = None
     if use_sp500:
-        symbols = get_sp_500_symbols()
-        splits = get_splits(symbols)
+        sp500_symbols = get_sp_500_symbols()
+        splits = get_splits(sp500_symbols)
 
     def _handler(min_year: int | None, max_year: int | None) -> StockHandler:
         handler = StockHandler(
@@ -155,6 +162,8 @@ def build_split_handlers(
             shuffle=True,
             cache_frames=True,
         )
+        if sp500_symbols is not None:
+            handler.keep_stocks(sp500_symbols)
         if symbols is not None:
             handler.keep_stocks(symbols)
         if use_quality_allowlist:

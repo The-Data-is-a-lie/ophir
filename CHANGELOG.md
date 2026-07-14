@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ophir evaluate --watchlist <file>` scores held-out cross-sectional rank-IC
+  over a named universe (newline-delimited symbols; `#` comments and blanks
+  ignored), via a new `symbols` filter on `build_split_handlers` — enabling a
+  commodity-ETF baseline (the current model's rank-IC on commodities) without
+  touching the store or the S&P 500 path.
 - Autoresearch loop: `--concurrent-seeds N` trains a trial's seeds
   simultaneously on one GPU (per-seed `train.log`, tree-kill timeouts, and a
   total-GPU-seconds batch deadline — the per-seed box under 3-way contention

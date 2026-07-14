@@ -658,6 +658,34 @@ def _evaluate_loaders(
     return results_by_label
 
 
+def _read_watchlist(path: str) -> list[str]:
+    """Read a newline-delimited symbol watchlist into upper-cased tickers.
+
+    Blank lines and ``#`` comments are ignored; each remaining line is stripped
+    and upper-cased so it matches the stored ``symbol=<SYM>`` parquet partitions.
+    Order is preserved and duplicates are dropped.
+
+    Parameters
+    ----------
+    path : str
+        Path to the watchlist file.
+
+    Returns
+    -------
+    list[str]
+        The de-duplicated symbols in file order.
+    """
+    from pathlib import Path
+
+    seen: dict[str, None] = {}
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw.strip().upper()
+        if not line or line.startswith("#"):
+            continue
+        seen.setdefault(line, None)
+    return list(seen)
+
+
 def evaluate(
     seq_len: int = 365,
     offset: int = 90,
@@ -672,6 +700,7 @@ def evaluate(
     val_max_year: int | None = None,
     data_dir: str | None = None,
     use_sp500: bool = False,
+    watchlist: str | None = None,
     val_batches: int = 50,
     strict: bool = False,
     finetuned: bool = False,
@@ -703,6 +732,11 @@ def evaluate(
         ``.ophir/data/days``).
     use_sp500 : bool
         Restrict to S&P 500 symbols (network fetch). Defaults to ``False``.
+    watchlist : str or None, optional
+        Path to a newline-delimited symbol file; when given, the eval
+        cross-section is restricted to those tickers (blank lines and ``#``
+        comments ignored). Composes with ``use_sp500`` as an intersection.
+        Defaults to ``None``.
     val_batches : int
         Maximum number of validation batches to score. Defaults to ``50``.
     strict : bool
@@ -716,6 +750,7 @@ def evaluate(
     from ophir.train import build_dataloader, build_split_handlers
 
     base_path = os.path.join(data_dir or register.get_default_data_days_dir(), "stocks")
+    symbols = _read_watchlist(watchlist) if watchlist else None
     _, val_handler = build_split_handlers(
         base_path=base_path,
         seq_len=seq_len,
@@ -726,6 +761,7 @@ def evaluate(
         val_min_year=val_min_year,
         val_max_year=val_max_year,
         use_sp500=use_sp500,
+        symbols=symbols,
     )
     val_dl = build_dataloader(
         val_handler,
